@@ -1,0 +1,408 @@
+---
+title: "Raman Spectra Preprocessing"
+author: "Esther Goldstein and Morgan Arrington"
+date: "1/14/2021"
+output: html_document
+---
+
+## This document is a WIP for pre-processing methods
+
+Install/open packages
+```{r, warning=FALSE,message=FALSE,error=FALSE}
+#install.packages('hyperSpec') #package to read in files. Install if you need it
+#install.packages("tidyverse") #package for data manipulation, viz and functions. Install if you need it
+#install.packages("EMSC") #package for extended multiplicative scatter correction
+#install.packages("ggforce") #package for saving figures as pdfs
+#install.packages("broom") #for working with tibbles
+#install.packages("baseline") #for modified polyfit function, will need to download rtools on CRAN first.
+#install.packages("prospectr") #for SG and other functions
+library(hyperSpec)
+library(tidyverse)
+library(EMSC) 
+library(ggforce)
+library(purrr)
+library(broom)
+library(baseline)
+library(prospectr)
+library(plotly)
+```
+
+
+
+Read in files, format, make into a df, and check with a plot
+
+```{r}
+setwd("C:/Users/marri/OneDrive/Documents/AFSC A&G Contract/Raman Spectroscopy/Walleye_Pollock Data/Combined") #will only change wd in this code chunk, have to run together
+
+files<-list.files(path="C:/Users/marri/OneDrive/Documents/AFSC A&G Contract/Raman Spectroscopy/Walleye_Pollock Data/Combined", pattern="WALLEYE_POLLOCK_") #set the file path to the folder with your files.
+
+#read in all the files
+spectrumlist <-lapply(files,read.spc)
+
+#make a dataframes out of the portions of the files that I am interested in for analysis
+specs<-lapply(spectrumlist, function (x) as.data.frame(cbind(x@wavelength, x@data$spc[1:length(x@data$spc)]))) 
+
+#add file names to the list of files
+names(specs)<-lapply(spectrumlist, function (x) x@data$filename) 
+
+#turn list into a dataframe and add a column with the filename
+specsdf<-dplyr::bind_rows(specs,.id="id")
+
+colnames(specsdf)<-c("filename","Ramanshift","spc")
+
+p <- ggplot(specsdf)+
+  geom_line(aes(x=Ramanshift,y=spc,color=filename))+
+  labs(title="Raw raman plot: samples only")+
+  theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
+
+ggplotly(p)
+
+
+```
+
+Subtract airscan
+```{r}
+#removing airscans from data set for now, still need to figure out if/ how to subtract
+airscan <- specsdf %>% 
+  filter(str_detect(filename, "airscan")) #keep for later
+
+specsdf <- specsdf %>%
+  filter(!str_detect(filename, "airscan")) #remove airscan for now
+
+ggplot(airscan)+
+  geom_line(aes(x=Ramanshift,y=spc,color=filename))+
+  labs(title="Raw raman plot: airscan only")
+
+## Some code below for subtracting airscan if desired
+
+#specsdf_air <- left_join(specsdf, airscan, by = "Ramanshift")%>% #code to subtract airscan from each without writing a loop, restore columns and column names
+  #mutate(spc = spc.x-spc.y)%>%
+  #select(c(filename.x, Ramanshift, spc))%>%
+  #rename(filename = filename.x)
+
+ggplot(specsdf)+
+  geom_line(aes(x=Ramanshift,y=spc,color=filename))+
+  labs(title="Raw raman plot: airscan subtract")+
+  theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
+
+```
+
+Split the data into 2 regions, the fingerprint (200-2100cm-1) and the stretch(2600-3250). 
+
+```{r pressure, echo=FALSE}
+#changing fingerprint to 2000 because of spikes
+fingerprint<-specsdf[specsdf$Ramanshift>=600 & specsdf$Ramanshift<=1800,] #used to be 200 t0 2100 recommended by Bharat.
+stretch<-specsdf[specsdf$Ramanshift>=2600 & specsdf$Ramanshift<=3250,] #2600 to 3250 recommended by Bharat. 
+```
+
+On each region, apply EMSE to correct for spectral variation. 
+This step is useful if you are trying to compare Raman information without the fluorescence 
+background variation.
+
+For the FP region EMSE degree 7 was used. 
+```{r}
+#needs to be wide format 
+fingerprint_w<-fingerprint%>%tidyr::pivot_wider(.,values_from="spc",id_cols="filename",names_from="Ramanshift")
+
+#perform EMSC on the numeric data (i.e. column 1 is the filename)
+fingerprint_EMSC<-EMSC(fingerprint_w[,2:ncol(fingerprint_w)], degree=7) # NOTE : MAYBE USE THIS TO ADD TO OVERALL LIST, PLOT EVERYTHING LATER
+
+#combine the corrected values with the filenames so we don't lose info
+fingerprint_w_EMSC<-as.data.frame(cbind(fingerprint_w$filename,fingerprint_EMSC$corrected)) 
+
+#change the format to long format for plotting easily in ggplot
+fingerprint_EMSC<-fingerprint_w_EMSC%>%tidyr::pivot_longer(.,cols=c(2:ncol(fingerprint_w_EMSC)),names_to="Ramanshift",values_to="spc_EMSC") 
+
+#name the columns
+colnames(fingerprint_w_EMSC)[1] <- c("filename")
+colnames(fingerprint_EMSC) <- c("filename", "Ramanshift", "spc_EMSC")
+
+#make sure the columns have the right numeric/factor etc assignments
+fingerprint_EMSC$filename<-as.factor(fingerprint_EMSC$filename)
+fingerprint_EMSC$Ramanshift<-as.numeric(as.character(fingerprint_EMSC$Ramanshift)) 
+fingerprint_EMSC$spc_EMSC<-as.numeric(as.character(fingerprint_EMSC$spc_EMSC))
+
+ggplot(fingerprint_EMSC)+
+  geom_line(aes(x=Ramanshift,y=spc_EMSC,color=filename))+
+  labs(title="Fingerprint region with EMSC")+
+  theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
+
+```
+
+Now stretch region EMSC:
+
+For the stretch r region EMSE degree 5 was used.
+
+Do the same as above but with the stretch section
+
+```{r}
+#needs to be wide format 
+stretch_w<-stretch%>%tidyr::pivot_wider(.,values_from="spc",id_cols="filename",names_from="Ramanshift")
+
+stretch_EMSC<-EMSC(stretch_w[,2:ncol(stretch_w)], degree=5)
+
+stretch_w_EMSC<-as.data.frame(cbind(stretch_w$filename,stretch_EMSC$corrected))
+
+stretch_EMSC<-stretch_w_EMSC%>%tidyr::pivot_longer(.,cols=c(2:ncol(stretch_w_EMSC)),names_to="Ramanshift",values_to="spc_EMSC")
+
+colnames(stretch_EMSC)<-c("filename","Ramanshift","spc_EMSC")
+
+stretch_EMSC$Ramanshift<-as.numeric(as.character(stretch_EMSC$Ramanshift))
+stretch_EMSC$spc_EMSC<-as.numeric(as.character(stretch_EMSC$spc_EMSC))
+
+ggplot(stretch_EMSC)+
+  geom_line(aes(x=Ramanshift,y=spc_EMSC,color=filename))+
+  labs(title="Stretch region with EMSC")+
+  theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
+```
+
+#### Polynomial subtraction used to remove background
+Modified polyfit method (Lieber and Mahadevan-Jenson 2003) recommended by Bharat.
+
+Polynomial order 7 was used for FP region and  3 was used for the Stretch region.
+
+```{r}
+# How to do this...need a matrix of spectra
+filenames <- fingerprint_w_EMSC[,1] #save filenames for later
+fp_emsc_mat <- as.matrix(fingerprint_w_EMSC)
+fp_emsc_mat <- fp_emsc_mat[,-1] #remove first column of filenames
+class(fp_emsc_mat) <- "numeric" 
+
+#switch to numeric
+# Use modified polyfit function from "baseline" package. More information in Lieber and Mahadevan-Jenson (2003) and Barroso et al. (2018)
+polyfit_res <- baseline.modpolyfit(fp_emsc_mat, degree = 7, tol = 0.001, rep = 100)
+
+# Add "baseline" and "corrected" back to dataframe
+fp_baseline <- as.data.frame(cbind(filenames,polyfit_res$baseline))
+fp_corrected <- as.data.frame(cbind(filenames,polyfit_res$corrected))
+
+# Make them long format to add back to fingerprint_emsc
+fp_w_baseline <- fp_baseline%>%
+  tidyr::pivot_longer(.,cols=c(2:ncol(fp_baseline)), values_to="spc_baseline")
+
+fp_w_corrected <- fp_corrected%>%
+  tidyr::pivot_longer(.,cols=c(2:ncol(fp_corrected)), values_to="spc_corrected")
+
+# Add back to fingerprint_EMSC
+fingerprint_EMSC_mpoly <- cbind(fingerprint_EMSC, as.numeric(fp_w_baseline$spc_baseline), as.numeric(fp_w_corrected$spc_corrected))
+colnames(fingerprint_EMSC_mpoly) <- c("filename","Ramanshift", "spc_EMSC", "spc_baseline", "spc_corrected")
+
+# Plot raw spectra, baseline polyfit, and corrected spectra to compare
+ggplot(fingerprint_EMSC_mpoly)+
+  geom_line(aes(x = Ramanshift, y = spc_EMSC))+
+  geom_line(aes(x=fingerprint_EMSC$Ramanshift, y = spc_baseline), color = "blue")+
+  geom_line(aes(x = Ramanshift, y = spc_corrected), color = "red")
+
+# Just corrected spectra
+ggplot(fingerprint_EMSC_mpoly)+
+  geom_line(aes(x = Ramanshift, y = spc_corrected, color = filename)) +
+  labs(title="Fingerprint region: EMSC and poly correction")+
+  theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
+
+```
+
+Now Stretch region
+
+Polynomial order 3 
+```{r}
+# How to do this...need a matrix of spectra
+filenames <- stretch_w_EMSC[,1] #save filenames for later
+stretch_emsc_mat <- as.matrix(stretch_w_EMSC)
+stretch_emsc_mat <- stretch_emsc_mat[,-1] #remove first column of filenames
+class(stretch_emsc_mat) <- "numeric" 
+
+# Use modified polyfit function from "baseline" package. More information in Lieber and Mahadevan-Jenson (2003) and Barroso et al. (2018)
+polyfit_res <- baseline.modpolyfit(stretch_emsc_mat, degree = 3, tol = 0.001, rep = 100)
+
+# Add "baseline" and "corrected" back to dataframe
+stretch_w_baseline <- as.data.frame(cbind(filenames,polyfit_res$baseline))
+stretch_w_corrected <- as.data.frame(cbind(filenames,polyfit_res$corrected))
+
+# Make them long format to add back to fingerprint_emsc
+stretch_baseline <- stretch_w_baseline%>%
+  tidyr::pivot_longer(.,cols=c(2:ncol(stretch_w_baseline)), values_to="spc_baseline")
+
+stretch_corrected <- stretch_w_corrected%>%
+  tidyr::pivot_longer(.,cols=c(2:ncol(stretch_w_corrected)), values_to="spc_corrected")
+
+# Add back to fingerprint_EMSC
+stretch_EMSC_mpoly <- cbind(stretch_EMSC, as.numeric(stretch_baseline$spc_baseline), as.numeric(stretch_corrected$spc_corrected))
+
+colnames(stretch_EMSC_mpoly) <- c("filename","Ramanshift", "spc_EMSC", "spc_baseline", "spc_corrected")
+
+# Plot raw spectra, baseline polyfit, and corrected spectra to compare
+ggplot(stretch_EMSC_mpoly)+
+  geom_line(aes(x = Ramanshift, y = spc_EMSC))+
+  geom_line(aes(x=stretch_EMSC$Ramanshift, y = spc_baseline), color = "blue")+
+  geom_line(aes(x = Ramanshift, y = spc_corrected), color = "red")
+
+# Just corrected spectra
+ggplot(stretch_EMSC_mpoly)+
+  geom_line(aes(x = Ramanshift, y = spc_corrected, color = filename))+
+  labs(title="Stretch region: EMSC and poly correction")+
+  theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
+
+```
+
+#### Apply Savitzky-Golay smoother to reduce noise
+
+Apply Savitzky-Golay smoother to fingerprint region
+```{r}
+# Savitzky-golay 2nd derivative smoother
+fingerprint_EMSC_mpoly_w <-fingerprint_EMSC_mpoly%>%tidyr::pivot_wider(.,values_from="spc_corrected",id_cols="filename",names_from="Ramanshift")
+
+fp_mpoly_mat <- as.matrix(fingerprint_EMSC_mpoly_w)
+fp_mpoly_mat <- fp_mpoly_mat[,-1]
+class(fp_mpoly_mat) <- "numeric"
+
+spc_sg <- savitzkyGolay(
+  X = fp_mpoly_mat,
+  m = 0,  #differentiation order
+  p = 2,  #polynomial order
+  w = 25 #window size, odd
+)
+
+# Add "filename" back
+fingerprint_EMSC_mpoly_sg_w <- as.data.frame(cbind(filenames,spc_sg))
+
+# Make them long format to add back to fingerprint_emsc
+fingerprint_EMSC_mpoly_sg <- fingerprint_EMSC_mpoly_sg_w%>%
+  tidyr::pivot_longer(.,cols=c(2:ncol(fingerprint_EMSC_mpoly_sg_w)),names_to = "Ramanshift", values_to = "spc_sg")
+
+# Make correct data types
+fingerprint_EMSC_mpoly_sg$Ramanshift <- as.numeric(fingerprint_EMSC_mpoly_sg$Ramanshift)
+fingerprint_EMSC_mpoly_sg$spc_sg <- as.numeric(fingerprint_EMSC_mpoly_sg$spc_sg)
+
+# Just corrected spectra
+ggplot(fingerprint_EMSC_mpoly_sg)+
+  geom_line(aes(x = Ramanshift, y = spc_sg, color = filenames))+
+  labs(title="Fingerprint region: EMSC and poly correction and SG smoothing")+
+  theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
+
+```
+
+Apply Savitzky-Golay smoother to stretch region
+```{r}
+# Savitzky-golay 2nd derivative smoother
+stretch_EMSC_mpoly_w <-stretch_EMSC_mpoly%>%tidyr::pivot_wider(.,values_from="spc_corrected",id_cols="filename",names_from="Ramanshift")
+
+stretch_mpoly_mat <- as.matrix(stretch_EMSC_mpoly_w)
+stretch_mpoly_mat <- stretch_mpoly_mat[,-1]
+class(stretch_mpoly_mat) <- "numeric"
+
+spc_sg <- savitzkyGolay(
+  X = stretch_mpoly_mat,
+  m = 0,  #differentiation order
+  p = 2,  #polynomial order
+  w = 25 #window size, odd
+)
+
+# Add "filename" back
+stretch_EMSC_mpoly_sg_w <- as.data.frame(cbind(filenames,spc_sg))
+
+
+# Make them long format to add back to fingerprint_emsc
+stretch_EMSC_mpoly_sg <- stretch_EMSC_mpoly_sg_w%>%
+  tidyr::pivot_longer(.,cols=c(2:ncol(stretch_EMSC_mpoly_sg_w)),names_to = "Ramanshift", values_to = "spc_sg")
+
+# Make correct data types
+stretch_EMSC_mpoly_sg$Ramanshift <- as.numeric(stretch_EMSC_mpoly_sg$Ramanshift)
+stretch_EMSC_mpoly_sg$spc_sg <- as.numeric(stretch_EMSC_mpoly_sg$spc_sg)
+
+# Just corrected spectra
+ggplot(stretch_EMSC_mpoly_sg)+
+  geom_line(aes(x = Ramanshift, y = spc_sg, color = filenames))+
+  labs(title="Stretch region: EMSC and poly correction and SG smoothing")+
+  theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
+
+```
+
+#### Output .csv files with preprocessed fingerprint and stretch regions
+```{r}
+# Output file with fingerprint_EMSC_mpoly_sg data
+write.csv(x = fingerprint_EMSC_mpoly_sg, file = "preprocessed_fingerprint.csv")
+# Output file with stretch_EMSC_mpoly_sg data
+write.csv(x = stretch_EMSC_mpoly_sg, file = "preprocessed_stretch.csv")
+
+```
+
+#### Apply Savitzky-Golay smoother to reduce noise
+
+Apply Savitzky-Golay smoother to fingerprint region
+```{r}
+# Savitzky-golay 2nd derivative smoother
+fingerprint_EMSC_mpoly_w <-fingerprint_EMSC_mpoly%>%tidyr::pivot_wider(.,values_from="spc_corrected",id_cols="filename",names_from="Ramanshift")
+
+fp_mpoly_mat <- as.matrix(fingerprint_EMSC_mpoly_w)
+fp_mpoly_mat <- fp_mpoly_mat[,-1]
+class(fp_mpoly_mat) <- "numeric"
+
+spc_sg <- savitzkyGolay(
+  X = fp_mpoly_mat,
+  m = 1,  #differentiation order
+  p = 2,  #polynomial order
+  w = 25 #window size, odd
+)
+
+# Add "filename" back
+fingerprint_EMSC_mpoly_sg_w <- as.data.frame(cbind(filenames,spc_sg))
+
+# Make them long format to add back to fingerprint_emsc
+fingerprint_EMSC_mpoly_sg <- fingerprint_EMSC_mpoly_sg_w%>%
+  tidyr::pivot_longer(.,cols=c(2:ncol(fingerprint_EMSC_mpoly_sg_w)),names_to = "Ramanshift", values_to = "spc_sg")
+
+# Make correct data types
+fingerprint_EMSC_mpoly_sg$Ramanshift <- as.numeric(fingerprint_EMSC_mpoly_sg$Ramanshift)
+fingerprint_EMSC_mpoly_sg$spc_sg <- as.numeric(fingerprint_EMSC_mpoly_sg$spc_sg)
+
+# Just corrected spectra
+ggplot(fingerprint_EMSC_mpoly_sg)+
+  geom_line(aes(x = Ramanshift, y = spc_sg, color = filenames))+
+  labs(title="Fingerprint region: EMSC and poly correction and SG smoothing")+
+  theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
+
+```
+
+Apply Savitzky-Golay smoother to stretch region
+```{r}
+# Savitzky-golay 2nd derivative smoother
+stretch_EMSC_mpoly_w <-stretch_EMSC_mpoly%>%tidyr::pivot_wider(.,values_from="spc_corrected",id_cols="filename",names_from="Ramanshift")
+
+stretch_mpoly_mat <- as.matrix(stretch_EMSC_mpoly_w)
+stretch_mpoly_mat <- stretch_mpoly_mat[,-1]
+class(stretch_mpoly_mat) <- "numeric"
+
+spc_sg <- savitzkyGolay(
+  X = stretch_mpoly_mat,
+  m = 1,  #differentiation order
+  p = 2,  #polynomial order
+  w = 25 #window size, odd
+)
+
+# Add "filename" back
+stretch_EMSC_mpoly_sg_w <- as.data.frame(cbind(filenames,spc_sg))
+
+# Make them long format to add back to fingerprint_emsc
+stretch_EMSC_mpoly_sg <- stretch_EMSC_mpoly_sg_w%>%
+  tidyr::pivot_longer(.,cols=c(2:ncol(stretch_EMSC_mpoly_sg_w)),names_to = "Ramanshift", values_to = "spc_sg")
+
+# Make correct data types
+stretch_EMSC_mpoly_sg$Ramanshift <- as.numeric(stretch_EMSC_mpoly_sg$Ramanshift)
+stretch_EMSC_mpoly_sg$spc_sg <- as.numeric(stretch_EMSC_mpoly_sg$spc_sg)
+
+# Just corrected spectra
+ggplot(stretch_EMSC_mpoly_sg)+
+  geom_line(aes(x = Ramanshift, y = spc_sg, color = filenames))+
+  labs(title="Stretch region: EMSC and poly correction and SG smoothing")+
+  theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
+
+```
+
+#### Output .csv files with preprocessed fingerprint and stretch regions
+```{r}
+# Output file with fingerprint_EMSC_mpoly_sg data
+write.csv(x = fingerprint_EMSC_mpoly_sg, file = "preprocessed_fingerprint_1deriv.csv")
+# Output file with stretch_EMSC_mpoly_sg data
+write.csv(x = stretch_EMSC_mpoly_sg, file = "preprocessed_stretch_1deriv.csv")
+
+```
