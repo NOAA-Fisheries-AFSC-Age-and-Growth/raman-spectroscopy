@@ -40,7 +40,7 @@ mat_naming <- splitstackshape::cSplit(filenames,sep="_",splitCols="filenameA") #
 colnames(mat_naming)[5] <- "barcode"
 mat_naming <- mat_naming[,c(1,5)] #keep filename and barcode columns to join with maturity data
 
-maturity_raw <- read.csv("C:/Users/marri/OneDrive/Documents/AFSC A&G Contract/Walleye Pollock Maturity Data/4Irina.csv", strip.white=TRUE) #load in ancillary data
+maturity_raw <- read.csv("C:/Users/marri/OneDrive/Documents/AFSC A&G Contract/Walleye Pollock Maturity Data/Maturity_data_histomaturity.csv", strip.white=TRUE) #load in ancillary data
 
 maturity_data <- left_join(maturity_raw, mat_naming, by = "barcode") #join to filename by barcode
 
@@ -49,8 +49,14 @@ maturity_data <- left_join(maturity_raw, mat_naming, by = "barcode") #join to fi
 maturity_data$filenames.x <- NULL
 maturity_data <- rename(maturity_data, filenames = filenames.y)
 
-maturity_data$SPECSTAGE <- factor(maturity_data$SPECSTAGE, levels = c("REG","IMM","MAT"))
-levels(maturity_data$SPECSTAGE)
+maturity_data$HistoMaturity <- factor(maturity_data$HistoMaturity , levels = c("IMM","ND","DEV","VIT","PSWN","SWN","PSNT","SPN","SNT","OSNT"))
+levels(maturity_data$HistoMaturity)
+
+maturity_data$CLEAN <- factor(maturity_data$CLEAN)
+levels(maturity_data$CLEAN)
+
+maturity_data <- maturity_data%>%
+  filter(CLEAN != c(2,3))
 
 ## Join fingerprint and maturity data
 fingerprint_data <- right_join(fr_data, maturity_data, by = "filenames")  #join by filename to each data set
@@ -66,15 +72,15 @@ stretch_data_1deriv <- right_join(sr_data_1deriv, maturity_data, by = "filenames
 #PCA on fingerprint region
 #Pivot wider 
 fp_data_1deriv_w<-fp_data_1deriv%>%
-  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "SPECSTAGE"), names_from="Ramanshift")
+  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "HistoMaturity"), names_from="Ramanshift")
 
 
-m1 = pca(fp_data_1deriv_w[,-c(1:2)], 7, scale = TRUE, info = "Maturity PCA")
+m1 = pca(fp_data_1deriv_w[,-c(1:2)], 7, scale = TRUE, info = "Histostage PCA")
 
 #PCA on stretch region
 #Pivot wider 
 stretch_data_1deriv_w<-stretch_data_1deriv%>%
-  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "SPECSTAGE"), names_from="Ramanshift")
+  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "HistoMaturity"), names_from="Ramanshift")
 
 
 m2 = pca(stretch_data_1deriv_w[,-c(1:2)], 7, scale = TRUE, info = "Maturity PCA")
@@ -84,23 +90,45 @@ m2 = pca(stretch_data_1deriv_w[,-c(1:2)], 7, scale = TRUE, info = "Maturity PCA"
 Fingerprint Region
 ===================================== 
 
-Row
+Row {.tabset}
 -----------------------------------------------------------------------
 
 
-### Spectra - Fingerprint Region
+### Spectra
 
 ```{r, fig.width= 15}
 
+oo_cols <- length(unique(fp_data_1deriv_w$HistoMaturity))
+oo_colors <- colorRampPalette(c("#2b9348","#B9E769","#EFEA5A","#F29E4C","#dc2f02", "#d00000","#370617"))(oo_cols)
+
 f <- ggplot(fingerprint_data)+
-  geom_line(aes(x = Ramanshift, y = spc_sg, group = filenames, color = SPECSTAGE))+
-  #(palette="RdYlGn")+
+  geom_line(aes(x = Ramanshift, y = spc_sg, group = filenames, color = HistoMaturity))+
+  scale_color_manual(values = oo_colors)+
   scale_x_continuous(breaks=seq(600,1800,250))+
   theme_classic()
 
 ggplotly(f)
 ```
 
+### Averaged Spectra
+
+```{r, fig.width= 15}
+
+#average and find standard error of spectra by stage
+summ <- fingerprint_data %>% 
+    group_by(Ramanshift, HistoMaturity) %>%
+    summarize(mean_spc = mean(spc_sg), se_spc = sd(spc_sg)/sqrt(n()))
+
+f <- ggplot(summ)+
+  geom_line(aes(x = Ramanshift, y = mean_spc, color = HistoMaturity))+
+  geom_ribbon(aes(x = Ramanshift, ymin = mean_spc - se_spc, ymax = mean_spc + se_spc, fill = HistoMaturity), alpha = 0.3)+
+  scale_color_manual(values = oo_colors)+
+  scale_fill_manual(values = oo_colors)+
+  scale_x_continuous(breaks=seq(600,1800,250))+
+  theme_classic()
+
+ggplotly(f)
+```
 
 Row
 -----------------------------------------------------------------------
@@ -126,15 +154,16 @@ Row {.tabset}
 #plotScores(m1$res$cal, show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
 
 t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,2], color = fp_data_1deriv_w$SPECSTAGE))+
-  labs(title="Scores",
+  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,2], color = fp_data_1deriv_w$HistoMaturity))+
+    scale_color_manual(values = oo_colors)+
+    labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
        x="Comp 1",
        y="Comp 2",
        color = "Maturity Status")+
-  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
-  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
-  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+    theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
 
 t
 
@@ -147,7 +176,8 @@ htmltools::div(t, align="center")
 #plotScores(m1$res$cal, c(1,3), show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
 
 t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,3], color = fp_data_1deriv_w$SPECSTAGE))+
+  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,3], color = fp_data_1deriv_w$HistoMaturity))+
+    scale_color_manual(values = oo_colors)+
   labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
        x="Comp 1",
@@ -156,6 +186,8 @@ t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
   theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+t
 
 htmltools::div(t, align="center")
 
@@ -167,7 +199,8 @@ htmltools::div(t, align="center")
 #plotScores(m1$res$cal, c(2,3), show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
 
 t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m1$res$cal$scores[,2], m1$res$cal$scores[,3], color = fp_data_1deriv_w$SPECSTAGE))+
+  geom_point(aes(m1$res$cal$scores[,2], m1$res$cal$scores[,3], color = fp_data_1deriv_w$HistoMaturity))+
+    scale_color_manual(values = oo_colors)+
   labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
        x="Comp 1",
@@ -193,16 +226,16 @@ plotLoadings(m1, 1:3, type = "l")
 Stretch Region
 ===================================== 
 
-Row
+Row{.tabset}
 -----------------------------------------------------------------------
 
-### Spectra - Stretch Region
+### Spectra
 
 ```{r, fig.width= 15}
 
 s <- ggplot(stretch_data)+
-  geom_line(aes(x = Ramanshift, y = spc_sg, group = filenames, color = SPECSTAGE))+
-  #scale_color_brewer(palette="RdYlGn")+
+  geom_line(aes(x = Ramanshift, y = spc_sg, group = filenames, color = HistoMaturity))+
+  scale_color_manual(values = oo_colors)+
   scale_x_continuous(breaks=seq(2600,3250,250))+
   theme_classic()
 
@@ -210,6 +243,25 @@ ggplotly(s)
 
 ```
 
+### Averaged Spectra
+
+```{r, fig.width= 15}
+
+#average and find standard error of spectra by stage
+summ <- stretch_data %>% 
+    group_by(Ramanshift, HistoMaturity) %>%
+    summarize(mean_spc = mean(spc_sg), se_spc = sd(spc_sg)/sqrt(n()))
+
+f <- ggplot(summ)+
+  geom_line(aes(x = Ramanshift, y = mean_spc, color = HistoMaturity))+
+  geom_ribbon(aes(x = Ramanshift, ymin = mean_spc - se_spc, ymax = mean_spc + se_spc, fill = HistoMaturity), alpha = 0.3)+
+  scale_color_manual(values = oo_colors)+
+  scale_fill_manual(values = oo_colors)+
+  scale_x_continuous(breaks=seq(600,1800,250))+
+  theme_classic()
+
+ggplotly(f)
+```
 
 Row 
 -----------------------------------------------------------------------
@@ -235,7 +287,8 @@ Row {.tabset}
 #plotScores(m2$res$cal, show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
 
 t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,2], color = stretch_data_1deriv_w$SPECSTAGE))+
+  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,2], color = stretch_data_1deriv_w$HistoMaturity))+
+    scale_color_manual(values = oo_colors)+
   labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
        x="Comp 1",
@@ -254,7 +307,8 @@ htmltools::div(t, align="center")
 #plotScores(m2$res$cal, c(1,3), show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
 
 t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,3], color = stretch_data_1deriv_w$SPECSTAGE))+
+  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,3], color = stretch_data_1deriv_w$HistoMaturity))+
+    scale_color_manual(values = oo_colors)+
   labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
        x="Comp 1",
@@ -273,7 +327,8 @@ htmltools::div(t, align="center")
 #plotScores(m2$res$cal, c(2,3), show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
 
 t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m2$res$cal$scores[,2], m2$res$cal$scores[,3], color = stretch_data_1deriv_w$SPECSTAGE))+
+  geom_point(aes(m2$res$cal$scores[,2], m2$res$cal$scores[,3], color = stretch_data_1deriv_w$HistoMaturity))+
+    scale_color_manual(values = oo_colors)+
   labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
        x="Comp 1",
