@@ -156,6 +156,10 @@ t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
   theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
 
+<<<<<<< HEAD
+=======
+t
+>>>>>>> 9cca56f2066d5f70c660b7ca1e6edf3b3512b90d
 
 htmltools::div(t, align="center")
 ```
