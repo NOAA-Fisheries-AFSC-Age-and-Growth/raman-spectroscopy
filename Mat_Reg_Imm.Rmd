@@ -1,0 +1,322 @@
+---
+title: "Q1 - Maturity Status"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: scroll
+    storyboard: true
+
+---
+```{r setup, include=FALSE}
+library(viridis)
+library(flexdashboard)
+library(tidyverse)
+library(mdatools)
+library(plotly)
+library(e1071)
+library(rpart)
+library(RColorBrewer)
+library(colorRamps)
+library(htmltools)
+library(janitor)
+
+# TIDY DATA
+##Load in pre-processed data
+### Fingerprint region
+fr_data <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_fingerprint.csv") #just SG smoothing for figs
+
+fr_data_1deriv <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_fingerprint_1deriv.csv") #derivative for PCA
+### Stretch region
+sr_data <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_stretch.csv") #derivative for PCA
+
+sr_data_1deriv <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_stretch_1deriv.csv") #just SG smoothing for figs
+
+## Prepare maturity data for joining 
+filenames <- unique(fr_data$filenames) #make vector of filenames so data can be joined
+filenames <- cbind(filenames,filenames)
+colnames(filenames)[2] <- "filenameA"
+
+mat_naming <- splitstackshape::cSplit(filenames,sep="_",splitCols="filenameA") #split filename to grab barcode for joining
+colnames(mat_naming)[5] <- "barcode"
+mat_naming <- mat_naming[,c(1,5)] #keep filename and barcode columns to join with maturity data
+
+maturity_raw <- read.csv("C:/Users/marri/OneDrive/Documents/AFSC A&G Contract/Walleye Pollock Maturity Data/4Irina.csv", strip.white=TRUE) #load in ancillary data
+
+maturity_data <- left_join(maturity_raw, mat_naming, by = "barcode") #join to filename by barcode
+
+#Clean up variables etc.
+
+maturity_data$filenames.x <- NULL
+maturity_data <- rename(maturity_data, filenames = filenames.y)
+
+maturity_data$SPECSTAGE <- factor(maturity_data$SPECSTAGE, levels = c("IMM","REG","MAT"))
+levels(maturity_data$SPECSTAGE)
+
+## Join fingerprint and maturity data
+fingerprint_data <- right_join(fr_data, maturity_data, by = "filenames")  #join by filename to each data set
+
+fp_data_1deriv <- right_join(fr_data_1deriv, maturity_data, by = "filenames")  #join by filename to each data set
+
+## Join Stretch and maturity data
+stretch_data <- right_join(sr_data, maturity_data, by = "filenames")  #join by filename to each data set
+
+stretch_data_1deriv <- right_join(sr_data_1deriv, maturity_data, by = "filenames")  #join by filename to each data set
+
+
+#PCA on fingerprint region
+#Pivot wider 
+fp_data_1deriv_w<-fp_data_1deriv%>%
+  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "SPECSTAGE"), names_from="Ramanshift")
+
+
+m1 = pca(fp_data_1deriv_w[,-c(1:2)], 7, scale = TRUE, info = "Maturity PCA")
+
+#PCA on stretch region
+#Pivot wider 
+stretch_data_1deriv_w<-stretch_data_1deriv%>%
+  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "SPECSTAGE"), names_from="Ramanshift")
+
+
+m2 = pca(stretch_data_1deriv_w[,-c(1:2)], 7, scale = TRUE, info = "Maturity PCA")
+
+```
+
+Fingerprint Region
+===================================== 
+
+Row{.tabset}
+-----------------------------------------------------------------------
+
+
+### Spectra
+
+```{r, fig.width= 15}
+
+f <- ggplot(fingerprint_data)+
+  geom_line(aes(x = Ramanshift, y = spc_sg, group = filenames, color = SPECSTAGE))+
+  scale_color_viridis(discrete = TRUE)+
+  scale_x_continuous(breaks=seq(600,1800,250))+
+  theme_classic()
+
+ggplotly(f)
+```
+
+### Averaged Spectra
+
+```{r, fig.width= 15}
+
+#average and find standard error of spectra by stage
+summ <- fingerprint_data %>% 
+    group_by(Ramanshift, SPECSTAGE) %>%
+    summarize(mean_spc = mean(spc_sg), se_spc = sd(spc_sg)/sqrt(n()))
+
+f <- ggplot(summ)+
+  geom_line(aes(x = Ramanshift, y = mean_spc, color = SPECSTAGE))+
+  geom_ribbon(aes(x = Ramanshift, ymin = mean_spc - se_spc, ymax = mean_spc + se_spc, fill = SPECSTAGE), alpha = 0.3)+
+  scale_color_viridis(discrete = TRUE)+
+  scale_fill_viridis(discrete = TRUE)+
+  scale_x_continuous(breaks=seq(600,1800,250))+
+  theme_classic()
+
+ggplotly(f)
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Scree plot
+
+```{r}
+plotVariance(m1$res$cal, show.labels = TRUE)
+```
+
+### Residuals
+
+```{r}
+plotResiduals(m1, show.labels = FALSE)
+```
+
+Row {.tabset}
+-----------------------------------------------------------------------
+
+### PCs 1 and 2
+
+```{r, fig.height = 6, fig.width = 6}
+#plotScores(m1$res$cal, show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
+
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,2], color = fp_data_1deriv_w$SPECSTAGE))+
+  labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 1",
+       y="Comp 2",
+       color = "Maturity Status")+
+    scale_color_viridis(discrete = TRUE)+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+
+htmltools::div(t, align="center")
+```
+
+
+### PCs 1 and 3
+```{r}
+#plotScores(m1$res$cal, c(1,3), show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
+
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,3], color = fp_data_1deriv_w$SPECSTAGE))+
+  labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 1",
+       y="Comp 3",
+       color = "Maturity Status")+
+    scale_color_viridis(discrete = TRUE)+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+htmltools::div(t, align="center")
+
+```
+
+
+### PCs 2 and 3
+```{r, fig.align= "center"}
+#plotScores(m1$res$cal, c(2,3), show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
+
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m1$res$cal$scores[,2], m1$res$cal$scores[,3], color = fp_data_1deriv_w$SPECSTAGE))+
+  labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 1",
+       y="Comp 3",
+       color = "Maturity Status")+
+    scale_color_viridis(discrete = TRUE)+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+htmltools::div(t, align="center")
+```
+
+
+Row
+-----------------------------------------------------------------------
+
+### Loadings
+
+```{r}
+plotLoadings(m1, 1:3, type = "l")
+```
+
+Stretch Region
+===================================== 
+
+Row
+-----------------------------------------------------------------------
+
+### Spectra - Stretch Region
+
+```{r, fig.width= 15}
+
+s <- ggplot(stretch_data)+
+  geom_line(aes(x = Ramanshift, y = spc_sg, group = filenames, color = SPECSTAGE))+
+  scale_color_viridis(discrete = TRUE)+
+  #scale_color_brewer(palette="RdYlGn")+
+  scale_x_continuous(breaks=seq(2600,3250,250))+
+  theme_classic()
+
+ggplotly(s)
+
+```
+
+
+Row 
+-----------------------------------------------------------------------
+
+### Scree plot
+
+```{r}
+plotVariance(m2$res$cal, show.labels = TRUE)
+```
+
+### Residuals
+
+```{r}
+plotResiduals(m2, show.labels = FALSE)
+```
+
+Row {.tabset}
+-----------------------------------------------------------------------
+
+### PCs 1 and 2
+
+```{r, fig.height = 6, fig.width = 6}
+#plotScores(m2$res$cal, show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
+
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,2], color = stretch_data_1deriv_w$SPECSTAGE))+
+    scale_color_viridis(discrete = TRUE)+
+  labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 1",
+       y="Comp 2",
+       color = "Maturity Status")+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+htmltools::div(t, align="center")
+```
+
+
+### PCs 1 and 3
+```{r}
+#plotScores(m2$res$cal, c(1,3), show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
+
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,3], color = stretch_data_1deriv_w$SPECSTAGE))+
+    scale_color_viridis(discrete = TRUE)+
+  labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 1",
+       y="Comp 2",
+       color = "Maturity Status")+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+htmltools::div(t, align="center")
+```
+
+
+### PCs 2 and 3
+```{r}
+#plotScores(m2$res$cal, c(2,3), show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
+
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m2$res$cal$scores[,2], m2$res$cal$scores[,3], color = stretch_data_1deriv_w$SPECSTAGE))+
+    scale_color_viridis(discrete = TRUE)+
+  labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 1",
+       y="Comp 2",
+       color = "Maturity Status")+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+htmltools::div(t, align="center")
+```
+
+
+Row
+-----------------------------------------------------------------------
+
+### Loadings
+
+```{r}
+plotLoadings(m2, 1:3, type = "l")
+```
