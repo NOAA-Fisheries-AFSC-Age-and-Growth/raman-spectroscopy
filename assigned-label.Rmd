@@ -1,5 +1,5 @@
 ---
-title: "Q1 - Maturity Status"
+title: "Pollock Maturity Study"
 output: 
   flexdashboard::flex_dashboard:
     orientation: rows
@@ -18,7 +18,7 @@ library(rpart)
 library(RColorBrewer)
 library(colorRamps)
 library(htmltools)
-library(janitor)
+library(scales)
 
 # TIDY DATA
 ##Load in pre-processed data
@@ -40,17 +40,17 @@ mat_naming <- splitstackshape::cSplit(filenames,sep="_",splitCols="filenameA") #
 colnames(mat_naming)[5] <- "barcode"
 mat_naming <- mat_naming[,c(1,5)] #keep filename and barcode columns to join with maturity data
 
-maturity_raw <- read.csv("C:/Users/marri/OneDrive/Documents/AFSC A&G Contract/Walleye Pollock Maturity Data/4Irina.csv", strip.white=TRUE) #load in ancillary data
+maturity_raw <- read.csv("C:/Users/marri/OneDrive/Documents/AFSC A&G Contract/Walleye Pollock Maturity Data/Maturity_data_histomaturity.csv", strip.white=TRUE) #load in ancillary data
 
 maturity_data <- left_join(maturity_raw, mat_naming, by = "barcode") #join to filename by barcode
 
 #Clean up variables etc.
-
 maturity_data$filenames.x <- NULL
 maturity_data <- rename(maturity_data, filenames = filenames.y)
 
-maturity_data$SPECSTAGE <- factor(maturity_data$SPECSTAGE, levels = c("IMM","REG","MAT"))
-levels(maturity_data$SPECSTAGE)
+maturity_data$CLEAN <- factor(maturity_data$CLEAN)
+maturity_data <- maturity_data%>%
+  filter(CLEAN == "1")
 
 ## Join fingerprint and maturity data
 fingerprint_data <- right_join(fr_data, maturity_data, by = "filenames")  #join by filename to each data set
@@ -63,21 +63,28 @@ stretch_data <- right_join(sr_data, maturity_data, by = "filenames")  #join by f
 stretch_data_1deriv <- right_join(sr_data_1deriv, maturity_data, by = "filenames")  #join by filename to each data set
 
 
+# make AssignedLabel a factor
+fingerprint_data$AssignedLabel <- factor(fingerprint_data$AssignedLabel, levels = c("immature", "VCA", "CAPOFV", "V", "VHY", "VPOF", "HYV", "HYVPOF", "HYPOFV", "POFV", "POFVHY", "POFHY", "POF", "OStk", "OStn", "REG", "REGtk", "REGtn", "PERItn", "REGEN"))
+fp_data_1deriv$AssignedLabel <- factor(fp_data_1deriv$AssignedLabel, levels = c("immature", "VCA", "CAPOFV", "V", "VHY", "VPOF", "HYV", "HYVPOF", "HYPOFV", "POFV", "POFVHY", "POFHY", "POF", "OStk", "OStn", "REG", "REGtk", "REGtn", "PERItn", "REGEN"))
+stretch_data$AssignedLabel <- factor(stretch_data$AssignedLabel, levels = c("immature", "VCA", "CAPOFV", "V", "VHY", "VPOF", "HYV", "HYVPOF", "HYPOFV", "POFV", "POFVHY", "POFHY", "POF", "OStk", "OStn", "REG", "REGtk", "REGtn", "PERItn", "REGEN"))
+stretch_data_1deriv$AssignedLabel <- factor(stretch_data_1deriv$AssignedLabel, levels = c("immature", "VCA", "CAPOFV", "V", "VHY", "VPOF", "HYV", "HYVPOF", "HYPOFV", "POFV", "POFVHY", "POFHY", "POF", "OStk", "OStn", "REG", "REGtk", "REGtn", "PERItn", "REGEN"))
+
 #PCA on fingerprint region
 #Pivot wider 
-fp_data_1deriv_w<-fp_data_1deriv%>%
-  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "SPECSTAGE"), names_from="Ramanshift")
+fp_data_1deriv_1_w<-fp_data_1deriv%>%
+  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "AssignedLabel"), names_from="Ramanshift")
 
+levels(fp_data_1deriv_1_w$AssignedLabel)
 
-m1 = pca(fp_data_1deriv_w[,-c(1:2)], 7, scale = TRUE, info = "Maturity PCA")
+m1 = pca(fp_data_1deriv_1_w[,-c(1:2)], 7, scale = TRUE, info = "Oocyte PCA")
 
 #PCA on stretch region
 #Pivot wider 
-stretch_data_1deriv_w<-stretch_data_1deriv%>%
-  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "SPECSTAGE"), names_from="Ramanshift")
+stretch_data_1deriv_1_w<-stretch_data_1deriv%>%
+  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "AssignedLabel"), names_from="Ramanshift")
 
 
-m2 = pca(stretch_data_1deriv_w[,-c(1:2)], 7, scale = TRUE, info = "Maturity PCA")
+m2 = pca(stretch_data_1deriv_1_w[,-c(1:2)], 7, scale = TRUE, info = "Oocyte PCA")
 
 ```
 
@@ -92,14 +99,23 @@ Row{.tabset}
 
 ```{r, fig.width= 15}
 
+oo_cols <- length(unique(fp_data_1deriv_1_w$AssignedLabel))
+oo_colors <- colorRampPalette(c("#2b9348","#B9E769","#EFEA5A","#F29E4C","#dc2f02", "#d00000","#370617"))(oo_cols)
+
+#oo_colors <- colorRampPalette(c("#ff0000","#ff8700","#ffd300","#deff0a","#a1ff0a","#0aff99","#0aefff","#147df5","#580aff","#be0aff"))(oo_cols)
+#oo_colors <- colorRampPalette(c("#54478c","#2c699a","#048ba8","#0db39e","#16db93","#83e377","#b9e769","#efea5a","#f1c453","#f29e4c"))(oo_cols)
+
 f <- ggplot(fingerprint_data)+
-  geom_line(aes(x = Ramanshift, y = spc_sg, group = filenames, color = SPECSTAGE))+
-  scale_color_viridis(discrete = TRUE)+
+  geom_line(aes(x = Ramanshift, y = spc_sg, group = filenames, color = AssignedLabel))+
+  #(palette="RdYlGn")+
   scale_x_continuous(breaks=seq(600,1800,250))+
+  scale_color_manual(values = oo_colors)+
   theme_classic()
 
 ggplotly(f)
 ```
+
+> AssignedLabel stages plotted for just specimens coded as CLEAN "1"
 
 ### Averaged Spectra
 
@@ -107,15 +123,19 @@ ggplotly(f)
 
 #average and find standard error of spectra by stage
 summ <- fingerprint_data %>% 
-    group_by(Ramanshift, SPECSTAGE) %>%
+    group_by(Ramanshift, AssignedLabel) %>%
     summarize(mean_spc = mean(spc_sg), se_spc = sd(spc_sg)/sqrt(n()))
 
-f <- ggplot(summ)+
-  geom_line(aes(x = Ramanshift, y = mean_spc, color = SPECSTAGE))+
-  geom_ribbon(aes(x = Ramanshift, ymin = mean_spc - se_spc, ymax = mean_spc + se_spc, fill = SPECSTAGE), alpha = 0.3)+
-  scale_color_viridis(discrete = TRUE)+
-  scale_fill_viridis(discrete = TRUE)+
+f <- ggplot(summ[which(summ$AssignedLabel %in% c("immature", "V", "HYV", "POF")),])+
+  geom_line(aes(x = Ramanshift, y = mean_spc, color = AssignedLabel))+
+  geom_ribbon(aes(x = Ramanshift, ymin = mean_spc - se_spc, ymax = mean_spc + se_spc, fill = AssignedLabel), alpha = 0.3)+
+  scale_color_manual(values = c("#2B9348", "#B9E769", "#EFEA5A", "#DC2F02"))+
+  scale_fill_manual(values = c("#2B9348", "#B9E769", "#EFEA5A", "#DC2F02"))+
   scale_x_continuous(breaks=seq(600,1800,250))+
+    labs(x= "Raman Shift (cm<sup>-1</sup>)",
+       y="Relative Intesity",
+       color = "Oocyte Stage",
+       fill = NULL)+
   theme_classic()
 
 ggplotly(f)
@@ -144,17 +164,19 @@ Row {.tabset}
 ```{r, fig.height = 6, fig.width = 6}
 #plotScores(m1$res$cal, show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
 
-t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,2], color = fp_data_1deriv_w$SPECSTAGE))+
+t <- ggplotly(ggplot()+
+  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,2], color = fp_data_1deriv_1_w$AssignedLabel))+
   labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
-       x="Comp 1",
-       y="Comp 2",
-       color = "Maturity Status")+
-    scale_color_viridis(discrete = TRUE)+
+       x="Comp 1 (39.9%)",
+       y="Comp 2 (26.9%)",
+       color = "Assigned Stage")+
+  scale_color_manual(values = oo_colors)+
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
   theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+t
 
 htmltools::div(t, align="center")
 ```
@@ -164,14 +186,14 @@ htmltools::div(t, align="center")
 ```{r}
 #plotScores(m1$res$cal, c(1,3), show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
 
-t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,3], color = fp_data_1deriv_w$SPECSTAGE))+
+t <- ggplotly(ggplot()+
+  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,3], color = fp_data_1deriv_1_w$AssignedLabel))+
   labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
        x="Comp 1",
        y="Comp 3",
-       color = "Maturity Status")+
-    scale_color_viridis(discrete = TRUE)+
+       color = "Assigned Stage")+
+  scale_color_manual(values = oo_colors)+
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
   theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
@@ -185,14 +207,14 @@ htmltools::div(t, align="center")
 ```{r, fig.align= "center"}
 #plotScores(m1$res$cal, c(2,3), show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
 
-t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m1$res$cal$scores[,2], m1$res$cal$scores[,3], color = fp_data_1deriv_w$SPECSTAGE))+
+t <- ggplotly(ggplot()+
+  geom_point(aes(m1$res$cal$scores[,2], m1$res$cal$scores[,3], color = fp_data_1deriv_1_w$AssignedLabel))+
   labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
-       x="Comp 1",
+       x="Comp 2",
        y="Comp 3",
-       color = "Maturity Status")+
-    scale_color_viridis(discrete = TRUE)+
+       color = "Assigned Stage")+
+  scale_color_manual(values = oo_colors)+
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
   theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
@@ -221,16 +243,35 @@ Row
 ```{r, fig.width= 15}
 
 s <- ggplot(stretch_data)+
-  geom_line(aes(x = Ramanshift, y = spc_sg, group = filenames, color = SPECSTAGE))+
-  scale_color_viridis(discrete = TRUE)+
+  geom_line(aes(x = Ramanshift, y = spc_sg, group = filenames, color = AssignedLabel))+
   #scale_color_brewer(palette="RdYlGn")+
   scale_x_continuous(breaks=seq(2600,3250,250))+
+  scale_color_manual(values = oo_colors)+
   theme_classic()
 
 ggplotly(s)
 
 ```
 
+> AssignedLabel stages plotted for just specimens coded as CLEAN "1"
+
+```{r, fig.width= 15}
+
+#average and find standard error of spectra by stage
+summ <- stretch_data %>% 
+    group_by(Ramanshift, AssignedLabel) %>%
+    summarize(mean_spc = mean(spc_sg), se_spc = sd(spc_sg)/sqrt(n()))
+
+f <- ggplot(summ)+
+  geom_line(aes(x = Ramanshift, y = mean_spc, color = AssignedLabel))+
+  geom_ribbon(aes(x = Ramanshift, ymin = mean_spc - se_spc, ymax = mean_spc + se_spc, fill = AssignedLabel), alpha = 0.3)+
+  scale_color_manual(values = oo_colors)+
+  scale_fill_manual(values = oo_colors)+
+  scale_x_continuous(breaks=seq(2600,3250,250))+
+  theme_classic()
+
+ggplotly(f)
+```
 
 Row 
 -----------------------------------------------------------------------
@@ -255,14 +296,14 @@ Row {.tabset}
 ```{r, fig.height = 6, fig.width = 6}
 #plotScores(m2$res$cal, show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
 
-t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,2], color = stretch_data_1deriv_w$SPECSTAGE))+
-    scale_color_viridis(discrete = TRUE)+
+t <- ggplotly(ggplot()+
+  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,2], color = stretch_data_1deriv_1_w$AssignedLabel))+
   labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
        x="Comp 1",
        y="Comp 2",
-       color = "Maturity Status")+
+       color = "Assigned Stage")+
+  scale_color_manual(values = oo_colors)+
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
   theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
@@ -275,14 +316,14 @@ htmltools::div(t, align="center")
 ```{r}
 #plotScores(m2$res$cal, c(1,3), show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
 
-t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,3], color = stretch_data_1deriv_w$SPECSTAGE))+
-    scale_color_viridis(discrete = TRUE)+
+t <- ggplotly(ggplot()+
+  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,3], color = stretch_data_1deriv_1_w$AssignedLabel))+
   labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
        x="Comp 1",
-       y="Comp 2",
-       color = "Maturity Status")+
+       y="Comp 3",
+       color = "Assigned Stage")+
+  scale_color_manual(values = oo_colors)+
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
   theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
@@ -295,14 +336,14 @@ htmltools::div(t, align="center")
 ```{r}
 #plotScores(m2$res$cal, c(2,3), show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
 
-t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
-  geom_point(aes(m2$res$cal$scores[,2], m2$res$cal$scores[,3], color = stretch_data_1deriv_w$SPECSTAGE))+
-    scale_color_viridis(discrete = TRUE)+
+t <- ggplotly(ggplot()+
+  geom_point(aes(m2$res$cal$scores[,2], m2$res$cal$scores[,3], color = stretch_data_1deriv_1_w$AssignedLabel))+
   labs(title="Scores",
        caption="Source: MACE 2017 Pollock",
-       x="Comp 1",
-       y="Comp 2",
-       color = "Maturity Status")+
+       x="Comp 2",
+       y="Comp 3",
+       color = "Assigned Stage")+
+  scale_color_manual(values = oo_colors)+
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
   theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)

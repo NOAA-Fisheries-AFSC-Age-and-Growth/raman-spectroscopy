@@ -55,8 +55,8 @@ levels(maturity_data$HistoMaturity)
 maturity_data$CLEAN <- factor(maturity_data$CLEAN)
 levels(maturity_data$CLEAN)
 
-maturity_data <- maturity_data%>%
-  filter(CLEAN != c(2,3))
+#maturity_data <- maturity_data%>%
+  #filter(CLEAN == "1")
 
 ## Join fingerprint and maturity data
 fingerprint_data <- right_join(fr_data, maturity_data, by = "filenames")  #join by filename to each data set
@@ -186,7 +186,6 @@ t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
   geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
   theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
 
-t
 
 htmltools::div(t, align="center")
 

@@ -1,0 +1,286 @@
+---
+title: "Discriminant Analysis"
+author: "Morgan Arrington"
+date: "5/28/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(viridis)
+library(flexdashboard)
+library(mdatools)
+library(plotly)
+library(e1071)
+library(rpart)
+library(RColorBrewer)
+library(colorRamps)
+library(htmltools)
+library(janitor)
+library(purrr)
+library(mgcv)
+library(pracma)
+library(ggforce)
+library(knitr)
+library(nnet)
+library(reshape2)
+library(mlogit)
+library(ggpubr)
+library(caret)
+library(MASS)
+
+# TIDY DATA
+##Load in pre-processed data
+### Fingerprint region
+fr_data <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_fingerprint.csv") #just SG smoothing for figs
+
+fr_data_1deriv <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_fingerprint_1deriv.csv") #derivative for PCA
+### Stretch region
+sr_data <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_stretch.csv") #derivative for PCA
+
+sr_data_1deriv <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_stretch_1deriv.csv") #just SG smoothing for figs
+
+## Prepare maturity data for joining 
+filenames <- unique(fr_data$filenames) #make vector of filenames so data can be joined
+filenames <- cbind(filenames,filenames)
+colnames(filenames)[2] <- "filenameA"
+
+mat_naming <- splitstackshape::cSplit(filenames,sep="_",splitCols="filenameA") #split filename to grab barcode for joining
+colnames(mat_naming)[5] <- "barcode"
+mat_naming <- mat_naming[,c(1,5)] #keep filename and barcode columns to join with maturity data
+
+maturity_raw <- read.csv("C:/Users/marri/OneDrive/Documents/AFSC A&G Contract/Walleye Pollock Maturity Data/Maturity_data_histomaturity.csv", strip.white=TRUE) #load in ancillary data
+
+maturity_data <- left_join(maturity_raw, mat_naming, by = "barcode") #join to filename by barcode
+
+#Clean up variables etc.
+
+maturity_data$filenames.x <- NULL
+maturity_data <- rename(maturity_data, filenames = filenames.y)
+
+maturity_data$HistoMaturity <- factor(maturity_data$HistoMaturity , levels = c("IMM","ND","DEV","VIT","PSWN","SWN","PSNT","SNT","OSNT"))
+levels(maturity_data$HistoMaturity)
+
+maturity_data$CLEAN <- factor(maturity_data$CLEAN)
+levels(maturity_data$CLEAN)
+
+#maturity_data <- maturity_data%>%
+  #filter(CLEAN == "1")
+
+## Join fingerprint and maturity data
+fingerprint_data <- right_join(fr_data, maturity_data, by = "filenames")  #join by filename to each data set
+
+fp_data_1deriv <- right_join(fr_data_1deriv, maturity_data, by = "filenames")  #join by filename to each data set
+
+## Join Stretch and maturity data
+stretch_data <- right_join(sr_data, maturity_data, by = "filenames")  #join by filename to each data set
+
+stretch_data_1deriv <- right_join(sr_data_1deriv, maturity_data, by = "filenames")  #join by filename to each data set
+
+```
+
+
+### Find peak instensities
+
+```{r, fig.width= 15}
+
+#First findpeaks(), first frow height, index, begin, end
+fp_list <- split(fingerprint_data, fingerprint_data$barcode)
+
+peak_list <- vector(mode = "list", length = length(fp_list))
+for (i in 1:length(fp_list)){
+  peak_list[[i]] <- data.frame(findpeaks(fp_list[[i]]$spc_sg)) #nups = 2, minpeakdistance = 20
+  peak_list[[i]]$X2 <- as.numeric(peak_list[[i]]$X2)
+  peak_list[[i]]$Ramanshift <- fp_list[[i]]$Ramanshift[peak_list[[i]][,2]]
+  names(peak_list) <- names(fp_list)
+}
+
+peakdf<-dplyr::bind_rows(peak_list,.id="id") #make data.frame by condensing list
+
+colnames(peakdf)<-c("barcode","peakintensity","index", "begin", "end", "ramanshift")
+
+
+#test <- peak_list %>% reduce(inner_join, by = "X2") #a way to try to identify matching peak locations across all spectra. Wah wah.
+
+```
+
+```{r}
+#view peaks on sample spectra
+
+ggplot()+
+  geom_line(data = fingerprint_data, aes(x = Ramanshift, y = spc_sg, group = filenames))+
+  scale_x_continuous(breaks=seq(600,1800,250))+
+  facet_wrap_paginate(~barcode, ncol = 1, nrow = 1)+
+  geom_vline(xintercept = peakdf$ramanshift)+
+    theme_classic()
+
+#Fit a GAM in order to solve for where y=0. DEPRICATED
+#fp1d_gam <- map(fp1d_list, ~gam(spc_sg ~ s(Ramanshift, k = 60), data = .x, method = "REML"))
+
+### VISUALIZE
+#test <- fp1d_gam[[1]]$fitted.values
+
+#testdf <- data.frame(test,fp1d_list[[1]]$Ramanshift)
+#testdf <- rename(testdf, Ramanshift = fp1d_list..1...Ramanshift)
+
+#ggplot()+
+  #geom_line(data = testdf, aes(x = Ramanshift, y = test))+
+  #geom_line(data = fp1d_list[[1]], aes(x = Ramanshift, y = spc_sg))
+
+```
+
+```{r}
+# another way to try this would be to create ranges and assign peaks to ranges.
+
+peakdf <- peakdf %>%
+  arrange(ramanshift, barcode) #to better visualize peak ranges
+
+peakdf$peaknum <- ifelse(peakdf$ramanshift >= 745 & peakdf$ramanshift <= 750, 1,
+         ifelse(peakdf$ramanshift >= 893 & peakdf$ramanshift <= 908, 2,
+                ifelse(peakdf$ramanshift >= 1075 & peakdf$ramanshift <= 1094, 3,
+                       ifelse(peakdf$ramanshift >= 1161 & peakdf$ramanshift <= 1191, 4,
+                              ifelse(peakdf$ramanshift >= 1335 & peakdf$ramanshift <= 1386, 5,
+                                     ifelse(peakdf$ramanshift >= 1452 & peakdf$ramanshift <= 1458, 6,
+                                            ifelse(peakdf$ramanshift >= 1585 & peakdf$ramanshift <= 1629, 7,
+                                                   ifelse(peakdf$ramanshift >= 1656 & peakdf$ramanshift <= 1665, 8, NA))))))))
+
+peakdf <- peakdf %>% #arrange to see quick
+  arrange(barcode)
+
+peak_dat <- peakdf%>%
+  filter(peaknum %in% c("1","2","3","4","5","6","7","8"))
+
+#add maturity info
+peak_dat$barcode <- as.integer(peak_dat$barcode)
+peak_dat <- left_join(peak_dat, maturity_data, by = "barcode")  #join by filename to each data set
+
+
+```
+
+```{r}
+#Try to plot peak intensities by barcode
+
+ggplot(peak_dat)+
+  geom_point(aes(ramanshift, peakintensity, group = barcode, color = HistoMaturity))
+
+```
+
+```{r}
+#make a table
+peak_sum <- peak_dat %>%
+  group_by(peaknum)%>%
+  summarize(n = n())
+
+kable(peak_sum)
+
+```
+We have more than more peak per range in some cases. Idea for now is to take average in this case and create new variable avg_intensity.
+
+```{r}
+
+peak_dat <- peak_dat%>%
+  group_by(barcode, peaknum)%>%
+  mutate(avg_intensity = mean(peakintensity))%>%
+  distinct(peaknum, .keep_all = T)
+
+peak_sum <- peak_dat %>%
+  group_by(peaknum)%>%
+  summarize(n = n())
+
+kable(peak_sum)
+
+```
+Great! One peak value for each barcode except for peak 7. Let's plot and look at these new avg_intensity.
+
+```{r}
+#Make plot
+ggplot(peak_dat)+
+  geom_point(aes(ramanshift, avg_intensity, group = barcode, color = HistoMaturity))
+
+```
+
+Check sample size of each category
+```{r}
+#Make plot
+## Pivot wider
+peakdat_w<-peak_dat%>%
+  tidyr::pivot_wider(.,values_from=c("peakintensity"),id_cols=c("barcode", "HistoMaturity"), names_from="peaknum")
+
+ggplot(peakdat_w)+
+  geom_bar(aes(peakdat_w$HistoMaturity))
+
+```
+
+
+Now let's try to run a test model. Let's try LDA I may need to mean center peaks. <http://www.sthda.com/english/articles/36-classification-methods-essentials/146-discriminant-analysis-essentials-in-r/>
+```{r}
+### Prepare data for modeling
+
+#rename peaks
+peakdat_w <- peakdat_w%>%
+  rename(peak1 = `1`, peak2 = `2`, peak3 = `3`, peak4 = `4`, peak5 = `5`, peak6 = `6`, peak7 = `7`, peak8 = `8`)
+
+#mean center all variables
+peakdat_w <- peakdat_w%>%
+  mutate(peak1.m = peak1 - mean(peakdat_w$peak1), peak2.m = peak2 - mean(peakdat_w$peak2), peak3.m = peak3 - mean(peakdat_w$peak3), peak4.m = peak4 - mean(peakdat_w$peak4), peak5.m = peak5 - mean(peakdat_w$peak5), peak6.m = peak6 - mean(peakdat_w$peak6), peak8.m = peak8 - mean(peakdat_w$peak8))
+
+#look at distributions ##NEED TO FIGURE OUT HOW
+#ggplot(peakdat_w)+
+  #geom_bar(aes(peak1.m))
+
+# Run a model!
+lda_mod <- lda(HistoMaturity ~ peak1.m + peak2.m + peak3.m + peak4.m + peak5.m + peak6.m + peak8.m, data = peakdat_w)
+
+lda_mod
+
+```
+How to interpret: LDA determines group pmeans and computes for each individual, probability of belonging to different groups. Individual assigned to the group with highest probability score. 
+
+Prior probabilities of groups: proporation of training obs in each group
+Group  means: group center of gravity. Shows mean of each variable in each group.
+Coeff of linear discriminants: linear combination of predictor variables used for decision rule. 
+
+
+Plot to look at linear discriminants
+```{r}
+
+plot(lda_mod)
+
+```
+
+```{r}
+
+predictions <- lda_mod %>%
+  predict(peakdat_w)
+
+predictions$posterior
+predictions$class
+
+mean(predictions$class==peakdat_w$HistoMaturity)
+
+lda_conf_mat <- confusionMatrix(peakdat_w$HistoMaturity, predictions$class)
+
+```
+
+```{r}
+
+multi_class_rates(lda_conf_mat$table)
+
+```
+
+```{r}
+#make dataframe
+lda_conf_df <- as.data.frame(lda_conf_mat$table)
+test <- lda_conf_df%>%
+  group_by(Reference)%>%
+  summarize(count = sum(Freq))
+
+lda_conf_df <- left_join(lda_conf_df, test, by = "Reference")
+
+lda_conf_df <- lda_conf_df%>%
+  mutate(proportion = Freq/count)
+
+ggplot(lda_conf_df)+
+  geom_point(aes(x = Reference, y = Prediction, size = proportion, alpha = proportion == 0.0))+
+  scale_alpha_manual(values = c(1,0))+
+  guides(alpha = FALSE)
