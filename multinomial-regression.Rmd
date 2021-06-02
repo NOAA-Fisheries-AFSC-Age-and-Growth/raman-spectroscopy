@@ -66,6 +66,11 @@ levels(maturity_data$HistoMaturity)
 maturity_data$CLEAN <- factor(maturity_data$CLEAN)
 levels(maturity_data$CLEAN)
 
+#Add GSI
+#gonad weight (g) / fish weight (g)) *100
+maturity_data <- maturity_data%>%
+  mutate(GSI = gonad_weight/organism_weight*100)
+
 #maturity_data <- maturity_data%>%
   #filter(CLEAN == "1")
 
@@ -443,7 +448,7 @@ Check sample size of each maturity category
 #Make plot
 ## Pivot wider
 peakdat_w<-peak_dat%>%
-  tidyr::pivot_wider(.,values_from=c("avg_intensity"),id_cols=c("barcode", "HistoMaturity"), names_from="peaknum")
+  tidyr::pivot_wider(.,values_from=c("avg_intensity"),id_cols=c("barcode", "HistoMaturity", "GSI", "length"), names_from="peaknum")
 
 ggplot(peakdat_w)+
   geom_bar(aes(peakdat_w$HistoMaturity))+
@@ -463,19 +468,19 @@ peakdat_w <- peakdat_w%>%
 
 #mean center all variables - leave out peak 5 and 8 for now because not full sample set.
 peakdat_w <- peakdat_w%>%
-  mutate(peak1.m = peak1 - mean(peakdat_w$peak1), peak2.m = peak2 - mean(peakdat_w$peak2), peak3.m = peak3 - mean(peakdat_w$peak3), peak4.m = peak4 - mean(peakdat_w$peak4), peak6.m = peak6 - mean(peakdat_w$peak6), peak7.m = peak7 - mean(peakdat_w$peak7), peak9.m = peak9 - mean(peakdat_w$peak9))
+  mutate(GSI.m = GSI - mean(peakdat_w$GSI), length.m = length - mean(peakdat_w$length, peak1.m = peak1 - mean(peakdat_w$peak1), peak2.m = peak2 - mean(peakdat_w$peak2), peak3.m = peak3 - mean(peakdat_w$peak3), peak4.m = peak4 - mean(peakdat_w$peak4), peak6.m = peak6 - mean(peakdat_w$peak6), peak7.m = peak7 - mean(peakdat_w$peak7), peak9.m = peak9 - mean(peakdat_w$peak9)))
 
 peak_moddf <- subset(peakdat_w, HistoMaturity != "OSNT")
 peak_moddf$HistoMaturity <- factor(peak_moddf$HistoMaturity, levels = c("IMM",  "ND",   "DEV",  "VIT",  "PSWN", "SWN",  "PSNT", "SNT"))
 
 #Reshape for mlogit()
-peak_moddf <- peak_moddf[,c(1:2, 12:18)]
+peak_moddf <- peak_moddf[,c(1:2, 14:22)]
 mdata <- mlogit.data(peak_moddf, varying = NULL, choice = "HistoMaturity", shape = "wide")
 
 # Run a model!
-test_mod <- mlogit(HistoMaturity ~ 1 | peak1.m + peak2.m + peak3.m + peak4.m + peak6.m + peak7.m + peak9.m, data = mdata, reflevel = "IMM")
+test_mod <- mlogit(HistoMaturity ~ 1 | peak1.m + peak2.m + peak3.m + peak4.m + peak6.m + peak7.m + peak9.m + GSI.m + length.m, data = mdata, reflevel = "IMM")
 
-test_mod2 <- multinom(HistoMaturity ~ peak1.m + peak2.m + peak3.m + peak4.m + peak6.m + peak9.m, data = peak_moddf)
+test_mod2 <- multinom(HistoMaturity ~ peak1.m + peak2.m + peak3.m + peak4.m + peak6.m + peak9.m + GSI.m + length.m, data = peak_moddf)
 
 multicollinearity(test_mod2)
 
@@ -496,8 +501,8 @@ RRR_u <- exp(coef(test_mod)+coef(summary(test_mod))[,c(2)])
 RRR <- cbind(RRR_m, RRR_l, RRR_u)
 
 #Make dataframe for plotting
-peak <- rep(c(NA,1,2,3,4,6,7,9), each = 7)
-status <- rep(c("DEV", "ND", "PSNT", "PSWN", "SNT", "SWN", "VIT"), times = 8)
+peak <- rep(c(NA,1,2,3,4,6,7,9,"GSI.m","length.m"), each = 7)
+status <- rep(c("DEV", "ND", "PSNT", "PSWN", "SNT", "SWN", "VIT"), times = 10)
 RRR_df <- as.data.frame(cbind(RRR, peak, status))
 
 #Prepare data for plotting
@@ -507,7 +512,7 @@ RRR_df$RRR_m <- as.numeric(RRR_df$RRR_m)
 RRR_df$RRR_l <- as.numeric(RRR_df$RRR_l)
 RRR_df$RRR_u <- as.numeric(RRR_df$RRR_u)
 
-#Try a plot
+#Try a plot - HAVE NOT UPDATED FOR GSI AND LENGTH
 oo_cols <- length(unique(peak_moddf$HistoMaturity))
 oo_colors <- colorRampPalette(c("#370617","#d00000","#dc2f02","#F29E4C","#EFEA5A","#B9E769","#2b9348"))(oo_cols)
 
@@ -594,6 +599,7 @@ plot_7 <- ggplot(subset(RRR_df, peak == "9"))+
   geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
   guides(color = FALSE, fill = FALSE)+
   theme_classic()
+
 ```
 
 ```{r, warnings = F, fig.width=3, fig.height=10, }
