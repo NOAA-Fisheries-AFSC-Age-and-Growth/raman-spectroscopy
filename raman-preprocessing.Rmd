@@ -2,7 +2,9 @@
 title: "Raman Spectra Preprocessing"
 author: "Esther Goldstein and Morgan Arrington"
 date: "1/14/2021"
-output: html_document
+output: 
+  html_document:
+  df_print: paged
 ---
 
 ## This document is a WIP for pre-processing methods
@@ -45,6 +47,7 @@ specs<-lapply(spectrumlist, function (x) as.data.frame(cbind(x@wavelength, x@dat
 #add file names to the list of files
 names(specs)<-lapply(spectrumlist, function (x) x@data$filename) 
 
+
 #turn list into a dataframe and add a column with the filename
 specsdf<-dplyr::bind_rows(specs,.id="id")
 
@@ -55,14 +58,14 @@ p <- ggplot(specsdf)+
   labs(title="Raw raman plot: samples only")+
   theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
 
-ggplotly(p)
-
+p
 
 ```
 
 Subtract airscan
 ```{r}
 #removing airscans from data set for now, still need to figure out if/ how to subtract
+#Began taking air scans correctly (2 feet away from all objects) after Bharat's email on 3/2/21. This includes scanning sessions on 3/8/21, 3/10/21, 3/15/21, 4/8/21, and 5/13/21
 airscan <- specsdf %>% 
   filter(str_detect(filename, "airscan")) #keep for later
 
@@ -74,15 +77,32 @@ ggplot(airscan)+
   labs(title="Raw raman plot: airscan only")
 
 ## Some code below for subtracting airscan if desired
+# first filter out airscans that were taken "correctly"
+airscan <- airscan %>% 
+  filter(filename %in% c("WALLEYE_POLLOCK_airscan_03_08_21", "WALLEYE_POLLOCK_airscan_03_10_21_00000.spc", "WALLEYE_POLLOCK_airscan_03_15_21_00000.spc", "WALLEYE_POLLOCK_airscan_04_08_21_00000.spc", "WALLEYE_POLLOCK_airscan_05_13_21_00000.spc"))
 
-#specsdf_air <- left_join(specsdf, airscan, by = "Ramanshift")%>% #code to subtract airscan from each without writing a loop, restore columns and column names
-  #mutate(spc = spc.x-spc.y)%>%
-  #select(c(filename.x, Ramanshift, spc))%>%
-  #rename(filename = filename.x)
+#then take average of these airscans
+airscan$filenameA<-airscan$filename #I don't want to lose the entire file name so I made a copy to split
 
-ggplot(specsdf)+
+airscan<-splitstackshape::cSplit(airscan,sep="_",splitCols="filenameA")#break the file name up so I can easily group individuals
+
+airscanmeans<-airscan%>%group_by(filenameA_1,filenameA_2,filenameA_3,Ramanshift)%>%summarise(meanspc=mean(spc))
+
+
+airscanmeans$Sample<-paste(airscanmeans$filenameA_1,airscanmeans$filenameA_2,airscanmeans$filenameA_3,sep="_")
+
+ggplot(airscanmeans,aes(x=Ramanshift,y=meanspc,color=Sample))+
+  geom_line()+
+  labs(title="Raw raman plot: airscan means")
+
+#Subtract the airscan average from spectra
+specsdf_air <- left_join(specsdf, airscanmeans, by = "Ramanshift")%>% #code to subtract airscan from each without writing a loop, restore columns and column names
+  mutate(spc = spc-meanspc)%>%
+  select(c(filename, Ramanshift, spc))
+
+ggplot(specsdf_air)+
   geom_line(aes(x=Ramanshift,y=spc,color=filename))+
-  labs(title="Raw raman plot: airscan subtract")+
+  labs(title="Raw raman plot")+
   theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
 
 ```
@@ -90,9 +110,9 @@ ggplot(specsdf)+
 Split the data into 2 regions, the fingerprint (200-2100cm-1) and the stretch(2600-3250). 
 
 ```{r pressure, echo=FALSE}
-#changing fingerprint to 2000 because of spikes
-fingerprint<-specsdf[specsdf$Ramanshift>=600 & specsdf$Ramanshift<=1800,] #used to be 200 t0 2100 recommended by Bharat.
-stretch<-specsdf[specsdf$Ramanshift>=2600 & specsdf$Ramanshift<=3250,] #2600 to 3250 recommended by Bharat. 
+#changing fingerprint to 1800 because of spikes
+fingerprint<-specsdf_air[specsdf_air$Ramanshift>=200 & specsdf_air$Ramanshift<=1800,] #used to be 200 t0 2100 recommended by Bharat.
+stretch<-specsdf_air[specsdf_air$Ramanshift>=2600 & specsdf_air$Ramanshift<=3250,] #2600 to 3250 recommended by Bharat. 
 ```
 
 On each region, apply EMSE to correct for spectral variation. 
@@ -163,7 +183,7 @@ Polynomial order 7 was used for FP region and  3 was used for the Stretch region
 
 ```{r}
 # How to do this...need a matrix of spectra
-filenames <- fingerprint_w_EMSC[,1] #save filenames for later
+filename <- fingerprint_w_EMSC[,1] #save filenames for later
 fp_emsc_mat <- as.matrix(fingerprint_w_EMSC)
 fp_emsc_mat <- fp_emsc_mat[,-1] #remove first column of filenames
 class(fp_emsc_mat) <- "numeric" 
@@ -173,8 +193,8 @@ class(fp_emsc_mat) <- "numeric"
 polyfit_res <- baseline.modpolyfit(fp_emsc_mat, degree = 7, tol = 0.001, rep = 100)
 
 # Add "baseline" and "corrected" back to dataframe
-fp_baseline <- as.data.frame(cbind(filenames,polyfit_res$baseline))
-fp_corrected <- as.data.frame(cbind(filenames,polyfit_res$corrected))
+fp_baseline <- as.data.frame(cbind(filename,polyfit_res$baseline))
+fp_corrected <- as.data.frame(cbind(filename,polyfit_res$corrected))
 
 # Make them long format to add back to fingerprint_emsc
 fp_w_baseline <- fp_baseline%>%
@@ -206,7 +226,7 @@ Now Stretch region
 Polynomial order 3 
 ```{r}
 # How to do this...need a matrix of spectra
-filenames <- stretch_w_EMSC[,1] #save filenames for later
+filename <- stretch_w_EMSC[,1] #save filenames for later
 stretch_emsc_mat <- as.matrix(stretch_w_EMSC)
 stretch_emsc_mat <- stretch_emsc_mat[,-1] #remove first column of filenames
 class(stretch_emsc_mat) <- "numeric" 
@@ -244,6 +264,15 @@ ggplot(stretch_EMSC_mpoly)+
 
 ```
 
+#### Output .csv files with preprocessed fingerprint and stretch regions just EMSC and mpoly, pre-smoothing
+```{r}
+# Output file with fingerprint_EMSC_mpoly_sg data
+write.csv(x = fingerprint_EMSC_mpoly, file = "fingerprint_EMSC_mpoly.csv")
+# Output file with stretch_EMSC_mpoly_sg data
+write.csv(x = stretch_EMSC_mpoly, file = "stretch_EMSC_mpoly.csv")
+
+```
+
 #### Apply Savitzky-Golay smoother to reduce noise
 
 Apply Savitzky-Golay smoother to fingerprint region
@@ -263,9 +292,9 @@ spc_sg <- savitzkyGolay(
 )
 
 # Add "filename" back
-fingerprint_EMSC_mpoly_sg_w <- as.data.frame(cbind(filenames,spc_sg))
+fingerprint_EMSC_mpoly_sg_w <- as.data.frame(cbind(filename,spc_sg))
 
-# Make them long format to add back to fingerprint_emsc
+# Make them long format 
 fingerprint_EMSC_mpoly_sg <- fingerprint_EMSC_mpoly_sg_w%>%
   tidyr::pivot_longer(.,cols=c(2:ncol(fingerprint_EMSC_mpoly_sg_w)),names_to = "Ramanshift", values_to = "spc_sg")
 
@@ -275,7 +304,7 @@ fingerprint_EMSC_mpoly_sg$spc_sg <- as.numeric(fingerprint_EMSC_mpoly_sg$spc_sg)
 
 # Just corrected spectra
 ggplot(fingerprint_EMSC_mpoly_sg)+
-  geom_line(aes(x = Ramanshift, y = spc_sg, color = filenames))+
+  geom_line(aes(x = Ramanshift, y = spc_sg, color = filename))+
   labs(title="Fingerprint region: EMSC and poly correction and SG smoothing")+
   theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
 
@@ -298,7 +327,7 @@ spc_sg <- savitzkyGolay(
 )
 
 # Add "filename" back
-stretch_EMSC_mpoly_sg_w <- as.data.frame(cbind(filenames,spc_sg))
+stretch_EMSC_mpoly_sg_w <- as.data.frame(cbind(filename,spc_sg))
 
 
 # Make them long format to add back to fingerprint_emsc
@@ -311,7 +340,7 @@ stretch_EMSC_mpoly_sg$spc_sg <- as.numeric(stretch_EMSC_mpoly_sg$spc_sg)
 
 # Just corrected spectra
 ggplot(stretch_EMSC_mpoly_sg)+
-  geom_line(aes(x = Ramanshift, y = spc_sg, color = filenames))+
+  geom_line(aes(x = Ramanshift, y = spc_sg, color = filename))+
   labs(title="Stretch region: EMSC and poly correction and SG smoothing")+
   theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
 
@@ -321,12 +350,14 @@ ggplot(stretch_EMSC_mpoly_sg)+
 ```{r}
 # Output file with fingerprint_EMSC_mpoly_sg data
 write.csv(x = fingerprint_EMSC_mpoly_sg, file = "preprocessed_fingerprint.csv")
+write.csv(x = fingerprint_EMSC_mpoly_sg_w, file = "preprocessed_fingerprint_wide.csv")
 # Output file with stretch_EMSC_mpoly_sg data
 write.csv(x = stretch_EMSC_mpoly_sg, file = "preprocessed_stretch.csv")
+write.csv(x = stretch_EMSC_mpoly_sg_w, file = "preprocessed_stretch_wide.csv")
 
 ```
 
-#### Apply Savitzky-Golay smoother to reduce noise
+#### Apply Savitzky-Golay smoother and 2st derivative for peak height vector
 
 Apply Savitzky-Golay smoother to fingerprint region
 ```{r}
@@ -339,9 +370,9 @@ class(fp_mpoly_mat) <- "numeric"
 
 spc_sg <- savitzkyGolay(
   X = fp_mpoly_mat,
-  m = 1,  #differentiation order
+  m = 2,  #differentiation order
   p = 2,  #polynomial order
-  w = 25 #window size, odd
+  w = 35 #window size, odd
 )
 
 # Add "filename" back
@@ -357,7 +388,7 @@ fingerprint_EMSC_mpoly_sg$spc_sg <- as.numeric(fingerprint_EMSC_mpoly_sg$spc_sg)
 
 # Just corrected spectra
 ggplot(fingerprint_EMSC_mpoly_sg)+
-  geom_line(aes(x = Ramanshift, y = spc_sg, color = filenames))+
+  geom_line(aes(x = Ramanshift, y = spc_sg*-1, color = filenames))+
   labs(title="Fingerprint region: EMSC and poly correction and SG smoothing")+
   theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
 
@@ -374,9 +405,9 @@ class(stretch_mpoly_mat) <- "numeric"
 
 spc_sg <- savitzkyGolay(
   X = stretch_mpoly_mat,
-  m = 1,  #differentiation order
+  m = 2,  #differentiation order
   p = 2,  #polynomial order
-  w = 25 #window size, odd
+  w = 39 #window size, odd
 )
 
 # Add "filename" back
@@ -392,7 +423,7 @@ stretch_EMSC_mpoly_sg$spc_sg <- as.numeric(stretch_EMSC_mpoly_sg$spc_sg)
 
 # Just corrected spectra
 ggplot(stretch_EMSC_mpoly_sg)+
-  geom_line(aes(x = Ramanshift, y = spc_sg, color = filenames))+
+  geom_line(aes(x = Ramanshift, y = spc_sg*-1, color = filenames))+
   labs(title="Stretch region: EMSC and poly correction and SG smoothing")+
   theme(legend.position = "none") #This line of code will turn legend off. Too many samples at once and the legend swamps the figure. 
 
@@ -401,8 +432,8 @@ ggplot(stretch_EMSC_mpoly_sg)+
 #### Output .csv files with preprocessed fingerprint and stretch regions
 ```{r}
 # Output file with fingerprint_EMSC_mpoly_sg data
-write.csv(x = fingerprint_EMSC_mpoly_sg, file = "preprocessed_fingerprint_1deriv.csv")
+write.csv(x = fingerprint_EMSC_mpoly_sg, file = "preprocessed_fingerprint_2deriv.csv")
 # Output file with stretch_EMSC_mpoly_sg data
-write.csv(x = stretch_EMSC_mpoly_sg, file = "preprocessed_stretch_1deriv.csv")
+write.csv(x = stretch_EMSC_mpoly_sg, file = "preprocessed_stretch_2deriv.csv")
 
 ```

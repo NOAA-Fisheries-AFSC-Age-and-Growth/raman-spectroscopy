@@ -34,20 +34,20 @@ library(glmnet)
 # TIDY DATA
 ##Load in pre-processed data
 ### Fingerprint region
-fr_data <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_fingerprint.csv") #just SG smoothing for figs
+fr_data <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/raman-spectroscopy/preprocessed_fingerprint.csv") #just SG smoothing for figs
 
-fr_data_1deriv <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_fingerprint_1deriv.csv") #derivative for PCA
+fr_data_1deriv <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/raman-spectroscopy/preprocessed_fingerprint_1deriv.csv") #derivative for PCA
 ### Stretch region
-sr_data <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_stretch.csv") #derivative for PCA
+sr_data <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/raman-spectroscopy/preprocessed_stretch.csv") #derivative for PCA
 
-sr_data_1deriv <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/Raman Analysis/raman-analysis/preprocessed_stretch_1deriv.csv") #just SG smoothing for figs
+sr_data_1deriv <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/raman-spectroscopy/preprocessed_stretch_1deriv.csv") #just SG smoothing for figs
 
 ## Prepare maturity data for joining 
-filenames <- unique(fr_data$filenames) #make vector of filenames so data can be joined
-filenames <- cbind(filenames,filenames)
-colnames(filenames)[2] <- "filenameA"
+filename <- unique(fr_data$filename) #make vector of filenames so data can be joined
+filename <- cbind(filename,filename)
+colnames(filename)[2] <- "filenameA"
 
-mat_naming <- splitstackshape::cSplit(filenames,sep="_",splitCols="filenameA") #split filename to grab barcode for joining
+mat_naming <- splitstackshape::cSplit(filename,sep="_",splitCols="filenameA") #split filename to grab barcode for joining
 colnames(mat_naming)[5] <- "barcode"
 mat_naming <- mat_naming[,c(1,5)] #keep filename and barcode columns to join with maturity data
 
@@ -56,9 +56,6 @@ maturity_raw <- read.csv("C:/Users/marri/OneDrive/Documents/AFSC A&G Contract/Wa
 maturity_data <- left_join(maturity_raw, mat_naming, by = "barcode") #join to filename by barcode
 
 #Clean up variables etc.
-
-maturity_data$filenames.x <- NULL
-maturity_data <- rename(maturity_data, filenames = filenames.y)
 
 maturity_data$HistoMaturity <- factor(maturity_data$HistoMaturity , levels = c("IMM","ND","DEV","VIT","PSWN","SWN","PSNT","SNT","OSNT"))
 levels(maturity_data$HistoMaturity)
@@ -75,7 +72,7 @@ maturity_data <- maturity_data%>%
   #filter(CLEAN == "1")
 
 ## Join fingerprint and maturity data
-fingerprint_data <- right_join(fr_data, maturity_data, by = "filenames")  #join by filename to each data set
+fingerprint_data <- right_join(fr_data, maturity_data, by = "filename")  #join by filename to each data set
 
 fp_data_1deriv <- right_join(fr_data_1deriv, maturity_data, by = "filenames")  #join by filename to each data set
 
@@ -468,19 +465,19 @@ peakdat_w <- peakdat_w%>%
 
 #mean center all variables - leave out peak 5 and 8 for now because not full sample set.
 peakdat_w <- peakdat_w%>%
-  mutate(GSI.m = GSI - mean(peakdat_w$GSI), length.m = length - mean(peakdat_w$length, peak1.m = peak1 - mean(peakdat_w$peak1), peak2.m = peak2 - mean(peakdat_w$peak2), peak3.m = peak3 - mean(peakdat_w$peak3), peak4.m = peak4 - mean(peakdat_w$peak4), peak6.m = peak6 - mean(peakdat_w$peak6), peak7.m = peak7 - mean(peakdat_w$peak7), peak9.m = peak9 - mean(peakdat_w$peak9)))
+  mutate(GSI.m = GSI - mean(peakdat_w$GSI), length.m = length - mean(peakdat_w$length), peak1.m = peak1 - mean(peakdat_w$peak1), peak2.m = peak2 - mean(peakdat_w$peak2), peak3.m = peak3 - mean(peakdat_w$peak3), peak4.m = peak4 - mean(peakdat_w$peak4), peak6.m = peak6 - mean(peakdat_w$peak6), peak7.m = peak7 - mean(peakdat_w$peak7), peak9.m = peak9 - mean(peakdat_w$peak9))
 
 peak_moddf <- subset(peakdat_w, HistoMaturity != "OSNT")
 peak_moddf$HistoMaturity <- factor(peak_moddf$HistoMaturity, levels = c("IMM",  "ND",   "DEV",  "VIT",  "PSWN", "SWN",  "PSNT", "SNT"))
 
 #Reshape for mlogit()
-peak_moddf <- peak_moddf[,c(1:2, 14:22)]
+peak_moddf <- peak_moddf[,c(1:2, 16:22)] #14:22 for GSI and length
 mdata <- mlogit.data(peak_moddf, varying = NULL, choice = "HistoMaturity", shape = "wide")
 
 # Run a model!
-test_mod <- mlogit(HistoMaturity ~ 1 | peak1.m + peak2.m + peak3.m + peak4.m + peak6.m + peak7.m + peak9.m + GSI.m + length.m, data = mdata, reflevel = "IMM")
+test_mod <- mlogit(HistoMaturity ~ 1 | peak1.m + peak2.m + peak3.m + peak4.m + peak6.m + peak7.m + peak9.m, data = mdata, reflevel = "IMM")
 
-test_mod2 <- multinom(HistoMaturity ~ peak1.m + peak2.m + peak3.m + peak4.m + peak6.m + peak9.m + GSI.m + length.m, data = peak_moddf)
+test_mod2 <- multinom(HistoMaturity ~ peak1.m + peak2.m + peak3.m + peak4.m + peak6.m + peak9.m, data = peak_moddf)
 
 multicollinearity(test_mod2)
 
@@ -749,6 +746,14 @@ pp_pred <- as.factor(pp_pred)
 #   }
 # }
 
+#Check vs original data
+mod_dat <- cbind(peak_moddf, pp_pred)
+mod_dat <- mod_dat%>%
+  rename(model_prediction = `...10`, reference = HistoMaturity)
+
+mod_dat <- mod_dat[,-c(3:9)]
+
+write.csv(x = mod_dat, file = "misclassified_6.8.21.csv")
 ```
 
 ```{r, warnings = F}

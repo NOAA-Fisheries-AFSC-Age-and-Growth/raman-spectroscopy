@@ -1,0 +1,1600 @@
+---
+title: "mn-ridge-2deriv"
+author: "Morgan Arrington"
+date: "7/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(viridis)
+library(flexdashboard)
+library(mdatools)
+library(plotly)
+library(e1071)
+library(rpart)
+library(RColorBrewer)
+library(colorRamps)
+library(htmltools)
+library(janitor)
+library(purrr)
+library(mgcv)
+library(pracma)
+library(ggforce)
+library(knitr)
+library(nnet)
+library(reshape2)
+library(mlogit)
+library(ggpubr)
+library(caret)
+library(performance)
+library(lmtest)
+library(lme4)
+library(glmnet)
+library(Metrics)
+
+# TIDY DATA
+##Load in pre-processed data
+### Fingerprint region
+fr_data <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/raman-spectroscopy/preprocessed_fingerprint.csv") #just SG smoothing for figs
+
+fr_data_2deriv <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/raman-spectroscopy/preprocessed_fingerprint_2deriv.csv") #derivative for PCA
+### Stretch region
+sr_data <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/raman-spectroscopy/preprocessed_stretch.csv") #derivative for PCA
+
+sr_data_2deriv <- read.csv("~/AFSC A&G Contract/Raman Spectroscopy/raman-spectroscopy/preprocessed_stretch_2deriv.csv") #just SG smoothing for figs
+
+## Prepare maturity data for joining 
+filenames <- unique(fr_data$filenames) #make vector of filenames so data can be joined
+filenames <- cbind(filenames,filenames)
+colnames(filenames)[2] <- "filenameA"
+
+mat_naming <- splitstackshape::cSplit(filenames,sep="_",splitCols="filenameA") #split filename to grab barcode for joining
+colnames(mat_naming)[5] <- "barcode"
+mat_naming <- mat_naming[,c(1,5)] #keep filename and barcode columns to join with maturity data
+
+maturity_raw <- read.csv("C:/Users/marri/OneDrive/Documents/AFSC A&G Contract/Walleye Pollock Maturity Data/Maturity_data_histomaturity.csv", strip.white=TRUE) #load in ancillary data
+
+maturity_data <- left_join(maturity_raw, mat_naming, by = "barcode") #join to filename by barcode
+
+#Clean up variables etc.
+maturity_data$filenames.x <- NULL
+maturity_data <- rename(maturity_data, filenames = filenames.y)
+
+maturity_data$HistoMaturity <- factor(maturity_data$HistoMaturity , levels = c("IMM","ND","DEV","VIT","PSWN","SWN","PSNT","SNT","OSNT"))
+levels(maturity_data$HistoMaturity)
+
+maturity_data$CLEAN <- factor(maturity_data$CLEAN)
+levels(maturity_data$CLEAN)
+
+#maturity_data <- maturity_data%>%
+  #filter(CLEAN == "1")
+
+#Add GSI
+#gonad weight (g) / fish weight (g)) *100
+maturity_data <- maturity_data%>%
+  mutate(GSI = gonad_weight/organism_weight*100)
+
+#Filter out OSNT, too few samples
+maturity_data <- maturity_data%>% 
+  filter(HistoMaturity != "OSNT")
+
+maturity_data$HistoMaturity <- factor(maturity_data$HistoMaturity)
+
+## Join fingerprint and maturity data
+fingerprint_data <- right_join(fr_data, maturity_data, by = "filenames")  #join by filename to each data set
+
+fp_data_2deriv <- right_join(fr_data_2deriv, maturity_data, by = "filenames")  #join by filename to each data set
+
+## Join Stretch and maturity data
+stretch_data <- right_join(sr_data, maturity_data, by = "filenames")  #join by filename to each data set
+
+stretch_data_2deriv <- right_join(sr_data_2deriv, maturity_data, by = "filenames")  #join by filename to each data set
+
+#PCA on fingerprint region
+#Pivot wider 
+fp_data_2deriv_w<-fp_data_2deriv%>%
+  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "HistoMaturity"), names_from="Ramanshift")
+
+m1 = pca(fp_data_2deriv_w[,-c(1:3)], 7, scale = TRUE, info = "Maturity Status PCA")
+
+#PCA on stretch region
+#Pivot wider 
+stretch_data_2deriv_w<-stretch_data_2deriv%>%
+  tidyr::pivot_wider(.,values_from="spc_sg",id_cols=c("filenames", "HistoMaturity"), names_from="Ramanshift")
+
+m2 = pca(stretch_data_2deriv_w[,-c(1:3)], 7, scale = TRUE, info = "Maturity Status PCA")
+
+```
+
+### Plot OG spectra and 2nd derivative fingerprint
+
+```{r, message = F, echo = F, , fig.width= 10}
+
+fp_data_2deriv$spc_sg_n <- fp_data_2deriv$spc_sg*-1
+
+f <- ggplot()+
+  geom_line(data = fingerprint_data[c(1:604),], aes(x = Ramanshift, y = spc_sg, group = filenames))+
+  geom_line(data = fp_data_2deriv[c(1:604),], aes(x = Ramanshift, y = spc_sg_n*160), color = "blue")+
+  scale_y_continuous(name = "OG", sec.axis = sec_axis(~./160, name = "Neg. 2nd Deriv"))
+
+ggplotly(f)
+
+```
+
+### Plot OG spectra and 2nd derivative stretch
+
+```{r, message = F, echo = F, , fig.width= 10}
+
+stretch_data_2deriv$spc_sg_n <- stretch_data_2deriv$spc_sg*-1
+
+f <- ggplot()+
+  geom_line(data = stretch_data[c(1:563),], aes(x = Ramanshift, y = spc_sg, group = filenames))+
+  geom_line(data = stretch_data_2deriv[c(1:563),], aes(x = Ramanshift, y = spc_sg_n*160), color = "blue")+
+  scale_y_continuous(name = "OG", sec.axis = sec_axis(~./160, name = "Neg 2nd Deriv"))
+
+ggplotly(f)
+
+```
+
+### Averaged fingerprint spectra
+
+```{r, message = F, echo = F, , fig.width= 10}
+
+#average and find standard error of spectra by stage
+summ <- fingerprint_data %>% 
+    group_by(Ramanshift, HistoMaturity) %>%
+    summarize(mean_spc = mean(spc_sg), se_spc = sd(spc_sg)/sqrt(n()))
+
+oo_cols <- length(unique(fingerprint_data$HistoMaturity))
+oo_colors <- colorRampPalette(c("#2b9348","#B9E769","#EFEA5A","#F29E4C","#dc2f02","#d00000","#370617"))(oo_cols)
+
+f <- ggplot(summ)+
+  geom_line(aes(x = Ramanshift, y = mean_spc, color = HistoMaturity))+
+  geom_ribbon(aes(x = Ramanshift, ymin = mean_spc - se_spc, ymax = mean_spc + se_spc, fill = HistoMaturity), alpha = 0.3)+
+  scale_color_manual(values = oo_colors)+
+  scale_fill_manual(values = oo_colors)+
+  scale_x_continuous(breaks=seq(600,1800,250))+
+  theme_classic()
+
+f
+
+ggsave("fp_avgspectra.pdf", width = 8, height = 5)
+```
+
+### Averaged 2nd derivative fingerprint spectra
+
+```{r, message = F, echo = F, , fig.width= 10}
+
+#average and find standard error of spectra by stage
+summ_2 <- fp_data_2deriv %>% 
+    group_by(Ramanshift, HistoMaturity) %>%
+    summarize(mean_spc = mean(spc_sg_n), se_spc = sd(spc_sg_n)/sqrt(n()))
+
+oo_cols <- length(unique(fingerprint_data$HistoMaturity))
+oo_colors <- colorRampPalette(c("#2b9348","#B9E769","#EFEA5A","#F29E4C","#dc2f02","#d00000","#370617"))(oo_cols)
+
+
+f <- ggplot(summ_2)+
+  geom_line(aes(x = Ramanshift, y = mean_spc, color = HistoMaturity))+
+  geom_ribbon(aes(x = Ramanshift, ymin = mean_spc - se_spc, ymax = mean_spc + se_spc, fill = HistoMaturity), alpha = 0.3)+
+  scale_color_manual(values = oo_colors)+
+  scale_fill_manual(values = oo_colors)+
+  #scale_x_continuous(breaks=seq(600,1800,250))+
+  theme_classic()
+
+f
+
+ggsave("fp2deriv_avgspectra.pdf", width = 8, height = 5)
+```
+
+### Scree plot
+
+```{r, echo = F}
+plotVariance(m1$res$cal, show.labels = TRUE)
+```
+
+### Residuals
+
+```{r, echo = F}
+plotResiduals(m1, show.labels = FALSE)
+```
+
+### PCs 1 and 2
+
+```{r, echo = F, fig.height = 6, fig.width = 6}
+#plotScores(m1$res$cal, show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
+
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,2], color = fp_data_2deriv_w$HistoMaturity))+
+    labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 1",
+       y="Comp 2",
+       color = "Maturity Status")+
+    scale_color_manual(values = oo_colors)+
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+    theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+
+htmltools::div(t, align="center")
+```
+
+
+### PCs 1 and 3
+```{r, echo = F}
+#plotScores(m1$res$cal, c(1,3), show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
+
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m1$res$cal$scores[,1], m1$res$cal$scores[,3], color = fp_data_2deriv_w$HistoMaturity))+
+  labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 1",
+       y="Comp 3",
+       color = "Maturity Status")+
+    scale_color_manual(values = oo_colors)+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+
+htmltools::div(t, align="center")
+
+```
+
+
+### PCs 2 and 3
+```{r, echo = F, fig.align= "center"}
+#plotScores(m1$res$cal, c(2,3), show.labels = FALSE, cgroup = fp_data_1deriv_1_w$MostProminent)
+
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m1$res$cal$scores[,2], m1$res$cal$scores[,3], color = fp_data_2deriv_w$HistoMaturity))+
+  labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 2",
+       y="Comp 3",
+       color = "Maturity Status")+
+    scale_color_manual(values = oo_colors)+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+htmltools::div(t, align="center")
+```
+
+### Averaged stretch spectra
+
+```{r, warnings = F, fig.width= 10, echo = F}
+
+#average and find standard error of spectra by stage
+summ_s <- stretch_data_2deriv %>% 
+    group_by(Ramanshift, HistoMaturity) %>%
+    summarize(mean_spc = mean(spc_sg_n), se_spc = sd(spc_sg_n)/sqrt(n()))
+
+#try reordering? error bars are showing up weird
+
+f <- ggplot(summ_s)+
+  geom_line(aes(x = Ramanshift, y = mean_spc, color = HistoMaturity))+
+  geom_ribbon(aes(x = Ramanshift, ymin = mean_spc - se_spc, ymax = mean_spc + se_spc, fill = HistoMaturity), alpha = 0.3)+
+  scale_color_manual(values = oo_colors)+
+  scale_fill_manual(values = oo_colors)+
+  scale_x_continuous(breaks=seq(600,1800,250))+
+  theme_classic()
+
+ggplotly(f)
+```
+
+
+### Scree plot
+
+```{r, echo = F}
+plotVariance(m2$res$cal, show.labels = TRUE)
+```
+
+### Residuals
+
+```{r, echo = F}
+plotResiduals(m2, show.labels = FALSE)
+```
+
+
+### PCs 1 and 2
+
+```{r, echo = F, fig.height = 6, fig.width = 6}
+#plotScores(m2$res$cal, show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
+
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,2], color = stretch_data_2deriv_w$HistoMaturity))+
+  labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 1",
+       y="Comp 2",
+       color = "Maturity Status")+
+    scale_color_manual(values = oo_colors)+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+htmltools::div(t, align="center")
+```
+
+
+### PCs 1 and 3
+```{r, echo = F}
+#plotScores(m2$res$cal, c(1,3), show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m2$res$cal$scores[,1], m2$res$cal$scores[,3], color = stretch_data_2deriv_w$HistoMaturity))+
+  labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 1",
+       y="Comp 3",
+       color = "Maturity Status")+
+    scale_color_manual(values = oo_colors)+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+htmltools::div(t, align="center")
+```
+
+
+### PCs 2 and 3
+```{r, echo = F}
+#plotScores(m2$res$cal, c(2,3), show.labels = FALSE, cgroup = stretch_data_1deriv_1_w$MostProminent)
+t <- ggplotly(ggplot(maturity_data, aes(label = barcode))+
+  geom_point(aes(m2$res$cal$scores[,2], m2$res$cal$scores[,3], color = stretch_data_2deriv_w$HistoMaturity))+
+  labs(title="Scores",
+       caption="Source: MACE 2017 Pollock",
+       x="Comp 2",
+       y="Comp 3",
+       color = "Maturity Status")+
+    scale_color_manual(values = oo_colors)+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50")+
+  theme(panel.border = element_rect(fill = NA, color = "grey50"), panel.background = element_blank(), legend.key = element_rect(fill = "white")), width=700, height=500)
+
+htmltools::div(t, align="center")
+```
+
+Now that we've taken a look at some exploratory plots and PCAs, going to start with analysis restricted to fingerprint region as a pilot. I'm interested in trying a multinomial regression approach because it does not require as strict assumptions to be met as a discriminant analysis: normality of independent variables, linearity of relationships, homoscedasticity, equal dispersion matrices for discriminant analysis (will also try this later). (Tabachnick et al.,
+2001)Multinomial logistic regression does have assumptions, such as the assumption of independence among the dependent variable choices. This assumption states that the choice of or membership in one category is not related to the choice or membership of another category (i.e., the dependent variable). The assumption of independence can be tested with the Hausman-McFadden test. Multicollinearity should be evaluated with simple correlations among the independent variables It will also allow for the inclusion of other data types such as fish length, GSI, or others. (Schwab, 2002; Tabachnick & Fidell, 2001) or a full discussion of multinomial
+logistic regression (Aldrich & Nelson, 1984; Fox, 1984; Hosmer & Lemeshow, 1989; Menard,
+1995)
+
+Using a multinomial regression approach will require converting spectral data into a series of peak intensities to use as explanatory variables. I will try this first with out other predictor variables but can add in later if we think this is a good approach.
+
+### Find peak intensities for fingerprint region
+
+```{r}
+
+#Sort peak values into ranges by ramanshift
+fp_data_2deriv$peaknum <- ifelse(fp_data_2deriv$Ramanshift >= 636 & fp_data_2deriv$Ramanshift <= 695, 1,
+         ifelse(fp_data_2deriv$Ramanshift >= 695 & fp_data_2deriv$Ramanshift <= 770, 2,
+                ifelse(fp_data_2deriv$Ramanshift >= 797 & fp_data_2deriv$Ramanshift <= 856, 3,
+                       ifelse(fp_data_2deriv$Ramanshift >= 856 & fp_data_2deriv$Ramanshift <= 970, 4,
+                              ifelse(fp_data_2deriv$Ramanshift >= 970 & fp_data_2deriv$Ramanshift <= 1052, 5,
+                                     ifelse(fp_data_2deriv$Ramanshift >= 1052 & fp_data_2deriv$Ramanshift <= 1132, 6,
+                                     ifelse(fp_data_2deriv$Ramanshift >= 1132 & fp_data_2deriv$Ramanshift <= 1208, 7,
+                                            ifelse(fp_data_2deriv$Ramanshift >= 1208 & fp_data_2deriv$Ramanshift <= 1282, 8,
+                                                   ifelse(fp_data_2deriv$Ramanshift >= 1282 & fp_data_2deriv$Ramanshift <= 1363, 9, 
+                                                          ifelse(fp_data_2deriv$Ramanshift >= 1363 & fp_data_2deriv$Ramanshift <= 1430, 10, 
+                                                                 ifelse(fp_data_2deriv$Ramanshift >= 1430 & fp_data_2deriv$Ramanshift <= 1490, 11, 
+                                                                        ifelse(fp_data_2deriv$Ramanshift >= 1550 & fp_data_2deriv$Ramanshift <= 1628, 12, 
+                                                                               ifelse(fp_data_2deriv$Ramanshift >= 1628 & fp_data_2deriv$Ramanshift <= 1699, 13, NA)))))))))))))
+
+fp_data_2deriv$peaknum <- as.factor(fp_data_2deriv$peaknum)
+fp_data_2deriv$barcode <- as.factor(fp_data_2deriv$barcode)
+
+peak_dat <- fp_data_2deriv%>%
+  group_by(barcode, peaknum, HistoMaturity)%>%
+  filter(spc_sg_n == max(spc_sg_n))%>%
+   ungroup()%>%
+  transmute(barcode, peaknum, HistoMaturity, intensity = spc_sg_n, ramanshift = Ramanshift, length, GSI)
+
+#Check that all specimens have peaks
+#make a table
+peak_sum <- peak_dat %>%
+  group_by(peaknum)%>%
+  summarize(n = n())
+
+peak_sum
+```
+
+### View peaks on sample spectra
+```{r, warning = F}
+
+ggplot()+
+  geom_line(data = subset(fp_data_2deriv, barcode == 64392), aes(x = Ramanshift, y = spc_sg_n, group = filenames))+
+  geom_point(data = subset(peak_dat, barcode == 64392), aes(ramanshift, intensity, group = barcode, color = HistoMaturity))+
+  theme_classic()
+
+```
+
+```{r, warnings = F}
+
+#Try to plot peak intensities by barcode
+oo_cols <- length(unique(peak_dat$HistoMaturity))
+oo_colors <- colorRampPalette(c("#2b9348","#B9E769","#EFEA5A","#F29E4C","#dc2f02","#d00000","#370617"))(oo_cols)
+
+ggplot(peak_dat)+
+  geom_line(data = fp_data_2deriv, aes(x = Ramanshift, y = spc_sg_n, group = filenames))+
+  geom_point(aes(ramanshift, intensity, group = barcode, color = HistoMaturity))+
+  scale_color_manual(values = oo_colors)+
+  theme_classic()
+  
+```
+
+### Find peak intensities for stretch
+
+```{r}
+
+#Sort peak values into ranges by ramanshift
+stretch_data_2deriv$peaknum <- ifelse(stretch_data_2deriv$Ramanshift >= 2850 & stretch_data_2deriv$Ramanshift <= 2890, 14,
+         ifelse(stretch_data_2deriv$Ramanshift >= 2917 & stretch_data_2deriv$Ramanshift <= 2953, 15,
+                ifelse(stretch_data_2deriv$Ramanshift >= 2957 & stretch_data_2deriv$Ramanshift <= 3007, 16, NA)))
+
+stretch_data_2deriv$peaknum <- as.factor(stretch_data_2deriv$peaknum)
+stretch_data_2deriv$barcode <- as.factor(stretch_data_2deriv$barcode)
+
+peak_dat_s <- stretch_data_2deriv%>%
+  group_by(barcode, peaknum, HistoMaturity)%>%
+  filter(spc_sg_n == max(spc_sg_n))%>%
+   ungroup()%>%
+  transmute(barcode, peaknum, HistoMaturity, intensity = spc_sg_n, ramanshift = Ramanshift, length, GSI)
+
+#Check that all specimens have peaks
+#make a table
+peak_sum <- peak_dat_s %>%
+  group_by(peaknum)%>%
+  summarize(n = n())
+
+peak_sum
+```
+
+### View peaks on sample spectra
+```{r, warning = F}
+
+ggplot()+
+  geom_line(data = subset(stretch_data_2deriv, barcode == 64392), aes(x = Ramanshift, y = spc_sg_n, group = filenames))+
+  geom_point(data = subset(peak_dat_s, barcode == 64392), aes(ramanshift, intensity, group = barcode, color = HistoMaturity))+
+  theme_classic()
+
+```
+
+```{r, warnings = F}
+
+#Try to plot peak intensities by barcode
+oo_cols <- length(unique(peak_dat$HistoMaturity))
+oo_colors <- colorRampPalette(c("#2b9348","#B9E769","#EFEA5A","#F29E4C","#dc2f02","#d00000","#370617"))(oo_cols)
+
+ggplot(peak_dat_s)+
+  geom_line(data = stretch_data_2deriv, aes(x = Ramanshift, y = spc_sg_n, group = filenames))+
+  geom_point(aes(ramanshift, intensity, group = barcode, color = HistoMaturity))+
+  scale_color_manual(values = oo_colors)+
+  theme_classic()
+  
+```
+
+
+### Check sample size of each maturity category
+```{r, warnings = F}
+#Make plot
+##Combine all peak data
+peak_alldat <- rbind(peak_dat, peak_dat_s)
+
+## Pivot wider
+peakdat_w<-peak_alldat%>%
+  tidyr::pivot_wider(.,values_from=c("intensity"),id_cols=c("barcode", "HistoMaturity", "GSI", "length"), names_from="peaknum")
+
+ggplot(peakdat_w)+
+  geom_bar(aes(HistoMaturity))+
+  theme_classic()
+```
+A lot of vitellogenic samples. May need to balance this and re-run. Ideal sample size would be events per variable (EPV) of >10. This would be # of parameters * 10 = minimum in a resonse category. de Jong et al. 2019. Balanced data does not seem to improve results. Could show this in a simulation to prove to reviewers. 
+
+### Subsample to make more even distribution
+```{r}
+#subsample for more even distribution
+peakdat_w_temp <- peakdat_w%>%
+  filter(HistoMaturity != "DEV" & HistoMaturity !="SNT")
+
+peakdat_w_temp <- peakdat_w_temp%>%
+  group_by(HistoMaturity)%>%
+  sample_n(20)
+
+peakdat_sub <- rbind(peakdat_w[which(peakdat_w$HistoMaturity == "SNT" | peakdat_w$HistoMaturity == "DEV"),], peakdat_w_temp)
+
+ggplot(peakdat_sub)+
+  geom_bar(aes(HistoMaturity))+
+  ylim(0,20)+
+  theme_classic()
+```
+
+### Prepare data for modeling
+Now let's try to run a test model. I will need to leave out peak 7 for now because not a full sample size. Will revisit this to see if I can solve this issue so peak 7 can be included. Let's try a ridge multinomial regression to deal with multicollinearity. All predictors on same scale already, but will mean center. (Dormann et al.)
+```{r, warnings = F}
+# Prepare data for modeling
+## Mean center all variables
+#rename peaks
+peakdat_w <- peakdat_sub%>%
+  rename(peak1 = `1`, peak2 = `2`, peak3 = `3`, peak4 = `4`, peak5 = `5`, peak6 = `6`, peak7 = `7`, peak8 = `8`, peak9 = `9`, peak10 = `10`, peak11= `11`, peak12 = `12`, peak13 = `13`, peak14 = `14`, peak15 = `15`, peak16 = `16`)
+
+#mean center all variables - leave out peak 5 and 8for now because not full sample set.
+
+#leaving out peak 14 becuase of such small variation among spectra. 
+peakdat_w <- peakdat_w%>%
+  mutate(GSI.m = GSI - mean(peakdat_w$GSI), length.m = length - mean(peakdat_w$length), peak1.m = peak1 - mean(peakdat_w$peak1), peak2.m = peak2 - mean(peakdat_w$peak2), peak3.m = peak3 - mean(peakdat_w$peak3), peak4.m = peak4 - mean(peakdat_w$peak4), peak5.m = peak5 - mean(peakdat_w$peak5), peak6.m = peak6 - mean(peakdat_w$peak6), peak7.m = peak7 - mean(peakdat_w$peak7), peak8.m = peak8 - mean(peakdat_w$peak8), peak9.m = peak9 - mean(peakdat_w$peak9), peak10.m = peak10 - mean(peakdat_w$peak10), peak11.m = peak11 - mean(peakdat_w$peak11), peak12.m = peak12 - mean(peakdat_w$peak12), peak13.m = peak13 - mean(peakdat_w$peak13), peak14.m = peak14 - mean(peakdat_w$peak14), peak15.m = peak15 - mean(peakdat_w$peak15), peak16.m = peak16 - mean(peakdat_w$peak16))
+
+peakdat_l <- peakdat_w%>%tidyr::pivot_longer(.,cols=c(23:ncol(peakdat_w)),names_to="peak_num",values_to="peak_diff") 
+
+ggplot(peakdat_l)+
+  geom_point(aes(peak_num, peak_diff))
+
+```
+Not seeing a lot of support for using stretch region peaks... variation is so small and visually not a lot of separation in peaks either. 
+
+
+### Run the model
+```{r}
+peak_moddf <- peakdat_w[,c(2,23:35)] #peaks 1-13 from fingerprint
+peak_mat <- model.matrix(HistoMaturity~., peak_moddf)[,-1]
+str(peak_mat)
+hist_vec <- factor(peak_moddf$HistoMaturity)
+# 
+# hist_vec <- ifelse(hist_vec == "IMM", 1, ifelse(hist_vec == "ND", 2, ifelse(hist_vec == "DEV", 3, ifelse(hist_vec == "VIT", 4, ifelse(hist_vec == "PSWN", 5, ifelse(hist_vec == "SWN", 6, ifelse(hist_vec == "PSNT", 7, ifelse(hist_vec == "SNT", 8, NA))))))))
+
+
+#Run a model
+## USE glmnet 
+#https://cran.r-project.org/web/packages/glmnet/vignettes/glmnet.pdf
+#http://www.sthda.com/english/articles/37-model-selection-essentials-in-r/153-penalized-regression-essentials-ridge-lasso-elastic-net/
+#https://glmnet.stanford.edu/articles/glmnet.html
+
+#Check out https://www.statlearning.com/
+
+#First, find good lambda value for shrinkage. Defined as the lambda that minimizes the cross-validated prediction error rate.
+set.seed(13)
+cv <- cv.glmnet(x = peak_mat, y = hist_vec, family = "multinomial", alpha = 0) #bootstrap
+plot(cv)
+
+```
+
+### Find log odds and RRR
+Now we can find coefficients (or log odds) for optimized lambda (lambda.min). If we exponentiate them, we can find relative risk ratio (odds).
+```{r}
+coefs <- coef(cv, s = "lambda.min")#Can bootstrap SE for coefs (need to figure out how)
+coefs_mat <- rbind(coefs$ND[,1]-coefs$IMM[,1], coefs$DEV[,1]-coefs$IMM[,1], coefs$VIT[,1]-coefs$IMM[,1], coefs$PSWN[,1]-coefs$IMM[,1], coefs$SWN[,1]-coefs$IMM[,1], coefs$PSNT[,1]-coefs$IMM[,1], coefs$SNT[,1]-coefs$IMM[,1]) #extract all coefficients, will need to subtract "ref" coefficient (IMM) from all others.
+coefs_mat <- as.data.frame(cbind(coefs_mat, c("ND", "DEV", "VIT", "PSWN", "SWN", "PSNT", "SNT")))
+
+coefs_df <- pivot_longer(coefs_mat, cols = c(2:14), names_to = "peak_num", values_to = "log_odds")
+coefs_df <- coefs_df[,-1]
+coefs_df$log_odds <- as.numeric(coefs_df$log_odds)
+coefs_df$V15 <- as.factor(coefs_df$V15)
+coefs_df$peak_num <- as.factor(coefs_df$peak_num)
+
+RRR_df <- coefs_df%>%
+  mutate(RRR_m = exp(log_odds))%>%
+  rename(maturity = "V15")
+
+```
+How to interpret: example, one unit increase in peak.1m intensity is associated with a decrease in log odds of a sample being DEV vs. IMM in the amount of -0.0057. ETC. Also interesting to note a lot of significance in the peak 3, 4, and 6 which we can observe visually by the separation in spectra!
+
+
+The probability of choosing one outcome category over the probability of the other and is often referred to as relative risk (odds). The relative risk ratios for a unit change in the predictor variable is the right-hand side linear equation exponentiated and therefore equal to exponentiated regression coefficients.
+```{r, include = FALSE}
+
+#Try a plot
+oo_cols <- length(unique(peak_moddf$HistoMaturity))
+oo_colors <- colorRampPalette(c("#370617","#d00000","#dc2f02","#F29E4C","#EFEA5A","#B9E769","#2b9348"))(oo_cols)
+
+plot_1 <- ggplot(subset(RRR_df, peak_num == "peak1.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_2 <- ggplot(subset(RRR_df, peak_num == "peak2.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_3 <- ggplot(subset(RRR_df, peak_num == "peak3.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_4 <- ggplot(subset(RRR_df, peak_num == "peak4.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_5 <- ggplot(subset(RRR_df, peak_num == "peak5.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_6 <- ggplot(subset(RRR_df, peak_num == "peak6.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_7 <- ggplot(subset(RRR_df, peak_num == "peak7.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_8 <- ggplot(subset(RRR_df, peak_num == "peak8.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_9 <- ggplot(subset(RRR_df, peak_num == "peak9.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_10 <- ggplot(subset(RRR_df, peak_num == "peak10.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_11 <- ggplot(subset(RRR_df, peak_num == "peak11.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_12 <- ggplot(subset(RRR_df, peak_num == "peak12.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_13 <- ggplot(subset(RRR_df, peak_num == "peak13.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+# plot_14 <- ggplot(subset(RRR_df, peak_num == "peak14.m"))+
+#   geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+#   #xlim(.9, 1.1)+
+#   scale_color_manual(values = oo_colors)+
+#   guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+#   labs(x=" ",
+#        y= " ",
+#        color = "Maturity Status")+
+#   geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+#   guides(color = FALSE, fill = FALSE)+
+#   theme_classic()
+# 
+# plot_15 <- ggplot(subset(RRR_df, peak_num == "peak15.m"))+
+#   geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+#   #xlim(.9, 1.1)+
+#   scale_color_manual(values = oo_colors)+
+#   guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+#   labs(x=" ",
+#        y= " ",
+#        color = "Maturity Status")+
+#   geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+#   guides(color = FALSE, fill = FALSE)+
+#   theme_classic()
+# 
+# plot_16 <- ggplot(subset(RRR_df, peak_num == "peak16.m"))+
+#   geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+#   #xlim(.9, 1.1)+
+#   scale_color_manual(values = oo_colors)+
+#   guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+#   labs(x=" ",
+#        y= " ",
+#        color = "Maturity Status")+
+#   geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+#   guides(color = FALSE, fill = FALSE)+
+#   theme_classic()
+```
+
+```{r, warnings = F, fig.width=4, fig.height=10, }
+ggarrange(plot_1, plot_2, plot_3, plot_4, plot_5, plot_6, plot_7, plot_8, plot_9, plot_10, plot_11, plot_12, plot_13, ncol = 2, nrow = 7)
+
+```
+For each explantory variable (peak intensity) null and alternative hypotheses can be formuated as:
+H0: The relative risk ratio (odds) associated with explantory variable x is equal to 1.
+Ha: The realtive risk ratio (odds) associated wtih the explanatory variable x is not equal to 1. 
+
+### Look at predicted probability
+To examine changes in predicted probability associated with variables, can create small datasets varying on variable while holding other constant. Do this for all peaks in turn while holding others at mean values. First prepare data.
+```{r, include = F}
+
+# Peak 1
+d_peak1 <- cbind(peak1.m = peak_moddf$peak1.m, peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak1 <- as.data.frame(predict(cv, newx = d_peak1, type = "response", s = "lambda.min"))
+pp.peak1 <- cbind(pp.peak1, peak_moddf$peak1.m)
+
+pp.peak1 <- pp.peak1%>%
+  transmute(peak = "1", `peak_moddf$peak1.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak1.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#ggplot(pp.peak1)+
+  #geom_line(aes(x = peak_diff, y = SWN))
+
+#Peak 2
+d_peak2 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = peak_moddf$peak2.m, peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m =  mean(peak_moddf$peak12.m), peak13.m =  mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak2 <- as.data.frame(predict(cv, newx = d_peak2, type = "response", s = "lambda.min"))
+pp.peak2 <- cbind(pp.peak2, peak_moddf$peak2.m)
+
+pp.peak2 <- pp.peak2%>%
+  transmute(peak = "2", `peak_moddf$peak2.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak2.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+# Peak 3
+d_peak3 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = peak_moddf$peak3.m, peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak3 <- as.data.frame(predict(cv, newx = d_peak3, type = "response", s = "lambda.min"))
+pp.peak3 <- cbind(pp.peak3, peak_moddf$peak3.m)
+
+pp.peak3 <- pp.peak3%>%
+  transmute(peak = "3", `peak_moddf$peak3.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak3.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 4
+d_peak4 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = peak_moddf$peak4.m,  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak4 <- as.data.frame(predict(cv, newx = d_peak4, type = "response", s = "lambda.min"))
+pp.peak4 <- cbind(pp.peak4, peak_moddf$peak4.m)
+
+pp.peak4 <- pp.peak4%>%
+  transmute(peak = "4", `peak_moddf$peak4.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak4.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 5
+d_peak5 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m =  peak_moddf$peak5.m, peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak5 <- as.data.frame(predict(cv, newx = d_peak5, type = "response", s = "lambda.min"))
+pp.peak5 <- cbind(pp.peak5, peak_moddf$peak5.m)
+
+pp.peak5 <- pp.peak5%>%
+  transmute(peak = "5", `peak_moddf$peak5.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak5.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 6
+d_peak6 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m =  mean(peak_moddf$peak5.m), peak6.m = peak_moddf$peak6.m, peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak6 <- as.data.frame(predict(cv, newx = d_peak6, type = "response", s = "lambda.min"))
+pp.peak6 <- cbind(pp.peak6, peak_moddf$peak6.m)
+
+pp.peak6 <- pp.peak6%>%
+  transmute(peak = "6", `peak_moddf$peak6.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak6.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 7
+d_peak7 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m =  mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = peak_moddf$peak7.m, peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak7 <- as.data.frame(predict(cv, newx = d_peak7, type = "response", s = "lambda.min"))
+pp.peak7 <- cbind(pp.peak7, peak_moddf$peak7.m)
+
+pp.peak7 <- pp.peak7%>%
+  transmute(peak = "7", `peak_moddf$peak7.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak7.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 8
+d_peak8 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m =  mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = peak_moddf$peak8.m, peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m =  mean(peak_moddf$peak11.m), peak12.m =  mean(peak_moddf$peak12.m), peak13.m =  mean(peak_moddf$peak13.m), peak14.m =  mean(peak_moddf$peak14.m), peak15.m =  mean(peak_moddf$peak15.m), peak16.m =  mean(peak_moddf$peak16.m))
+
+pp.peak8 <- as.data.frame(predict(cv, newx = d_peak8, type = "response", s = "lambda.min"))
+pp.peak8 <- cbind(pp.peak8, peak_moddf$peak8.m)
+
+pp.peak8 <- pp.peak8%>%
+  transmute(peak = "8", `peak_moddf$peak8.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak8.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 9
+d_peak9 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = peak_moddf$peak9.m, peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak9 <- as.data.frame(predict(cv, newx = d_peak9, type = "response", s = "lambda.min"))
+pp.peak9 <- cbind(pp.peak9, peak_moddf$peak9.m)
+
+pp.peak9 <- pp.peak9%>%
+  transmute(peak = "9", `peak_moddf$peak9.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak9.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 10
+d_peak10 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = peak_moddf$peak10.m, peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak10 <- as.data.frame(predict(cv, newx = d_peak10, type = "response", s = "lambda.min"))
+pp.peak10 <- cbind(pp.peak10, peak_moddf$peak10.m)
+
+pp.peak10 <- pp.peak10%>%
+  transmute(peak = "10", `peak_moddf$peak10.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak10.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 11
+d_peak11 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = peak_moddf$peak11.m, peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak11 <- as.data.frame(predict(cv, newx = d_peak11, type = "response", s = "lambda.min"))
+pp.peak11 <- cbind(pp.peak11, peak_moddf$peak11.m)
+
+pp.peak11 <- pp.peak11%>%
+  transmute(peak = "11", `peak_moddf$peak11.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak11.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 12
+d_peak12 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = peak_moddf$peak12.m, peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak12 <- as.data.frame(predict(cv, newx = d_peak12, type = "response", s = "lambda.min"))
+pp.peak12 <- cbind(pp.peak12, peak_moddf$peak12.m)
+
+pp.peak12 <- pp.peak12%>%
+  transmute(peak = "12", `peak_moddf$peak12.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak12.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 13
+d_peak13 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = peak_moddf$peak13.m, peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+
+pp.peak13 <- as.data.frame(predict(cv, newx = d_peak13, type = "response", s = "lambda.min"))
+pp.peak13 <- cbind(pp.peak13, peak_moddf$peak13.m)
+
+pp.peak13 <- pp.peak13%>%
+  transmute(peak = "13", `peak_moddf$peak13.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak13.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+# #Peak 14
+# d_peak14 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = peak_moddf$peak14.m, peak15.m = mean(peak_moddf$peak15.m), peak16.m = mean(peak_moddf$peak16.m))
+# 
+# pp.peak14 <- as.data.frame(predict(cv, newx = d_peak14, type = "response", s = "lambda.min"))
+# pp.peak14 <- cbind(pp.peak14, peak_moddf$peak14.m)
+# 
+# pp.peak14 <- pp.peak14%>%
+#   transmute(peak = "14", `peak_moddf$peak14.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+#   rename(peak_diff = `peak_moddf$peak14.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+# 
+# #Peak 15
+# d_peak15 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = peak_moddf$peak15.m, peak16.m = mean(peak_moddf$peak16.m))
+# 
+# pp.peak15 <- as.data.frame(predict(cv, newx = d_peak15, type = "response", s = "lambda.min"))
+# pp.peak15 <- cbind(pp.peak15, peak_moddf$peak15.m)
+# 
+# pp.peak15 <- pp.peak15%>%
+#   transmute(peak = "15", `peak_moddf$peak15.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+#   rename(peak_diff = `peak_moddf$peak15.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+# 
+# #Peak 16
+# d_peak16 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = peak_moddf$peak16.m)
+# 
+# pp.peak16 <- as.data.frame(predict(cv, newx = d_peak16, type = "response", s = "lambda.min"))
+# pp.peak16 <- cbind(pp.peak16, peak_moddf$peak16.m)
+# 
+# pp.peak16 <- pp.peak16%>%
+#   transmute(peak = "16", `peak_moddf$peak16.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+#   rename(peak_diff = `peak_moddf$peak16.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+
+# combine probabilities into one data set
+pp.all <- rbind(pp.peak1, pp.peak2, pp.peak3, pp.peak4, pp.peak5, pp.peak6, pp.peak7, pp.peak8, pp.peak9, pp.peak10, pp.peak11, pp.peak12, pp.peak13)
+
+#melt data to long for ggplot
+pp.all_l <- melt(pp.all, id.vars = c("peak", "peak_diff"), value.name = "probability")
+
+pp.all_l$peak <- as.numeric(pp.all_l$peak)
+
+```
+
+
+Now plot these probabilities. This plot shows how the probability of each maturity category changes as the peak intensity increases or decreases away from the average (since peak intensity data were mean centered). This is show individually for each peak. 
+```{r, warnings = F}
+# Try a plot!!!
+oo_colors <- colorRampPalette(c("#2b9348","#B9E769","#EFEA5A","#F29E4C","#dc2f02", "#d00000","#370617"))(oo_cols)
+
+ggplot(pp.all_l)+
+  geom_line(aes(x = peak_diff, y = probability, group = variable, color = variable))+
+  facet_wrap(~peak, scales = "free_x")+
+  scale_color_manual(values = oo_colors)+
+  theme_classic()
+```
+
+### Look at predictions and classification
+Can use predicted probabilities to help understand the model by converting them back to the scale of the response variable (maturity category). Calculate predicted probabilities for each outcome level using fitted function. We can start by generating the predicted probabilities for the observations in our dataset. Can eventually split data into training and test set.  
+```{r, include = F}
+pp <- predict(cv, newx = peak_mat, type = "class", s = "lambda.min", alpha = 0)
+
+pp_pred <- as.factor(pp)
+
+```
+
+```{r, warnings = F}
+# use caret and compute a confusion matrix
+mn_conf_mat <-confusionMatrix(data = pp_pred, reference = peak_moddf$HistoMaturity)
+
+mn_conf_mat
+```
+To look at this in terms of True Positives, True Negatives, False Positives, and False Negatives.
+```{r, warnings = F}
+#Calculate TP, TN, FP, FN
+multi_class_rates <- function(confusion_matrix) {
+    true_positives  <- diag(confusion_matrix)
+    false_positives <- colSums(confusion_matrix) - true_positives
+    false_negatives <- rowSums(confusion_matrix) - true_positives
+    true_negatives  <- sum(confusion_matrix) - true_positives -
+        false_positives - false_negatives
+    return(data.frame(true_positives, false_positives, true_negatives,
+                      false_negatives, row.names = names(true_positives)))
+}
+
+multi_class_rates(mn_conf_mat$table)
+```
+
+Another way to look at this graphically. I will make this prettier...
+```{r}
+#make dataframe
+mn_conf_df <- as.data.frame(mn_conf_mat$table)
+test <- mn_conf_df%>%
+  group_by(Reference)%>%
+  summarize(count = sum(Freq))
+
+mn_conf_df <- left_join(mn_conf_df, test, by = "Reference")
+
+mn_conf_df <- mn_conf_df%>%
+  mutate(proportion = Freq/count)
+
+
+ggplot(mn_conf_df)+
+  geom_point(aes(x = Reference, y = Prediction, size = proportion, alpha = proportion == 0.0))+
+  scale_alpha_manual(values = c(1,0))+
+  scale_size_area()+
+  guides(alpha = FALSE)+
+  theme_classic()
+
+ggsave("histosub_fppeaks.pdf", width = 6, height = 5)
+
+```
+
+This is really cool actually because we can see what reference categories are most commonly incorrectly classified as and it makes biological sense. For example, PSWN was mostly incorrectly specified as VIT. PSWN = partial-spawning and is biologically very similar to VIT = Vitellogensis. The PSWN stage will have many vitellogenic oocytes present in addition to some hydrated. Higher sample size of VIT in the model which is I think why they are being classified as VIT. 
+
+## Do this again but include length (and maybe GSI)
+```{r}
+peak_moddf <- peakdat_w[,c(2,21:35)]
+peak_mat <- model.matrix(HistoMaturity~., peak_moddf)[,-1]
+str(peak_mat)
+hist_vec <- factor(peak_moddf$HistoMaturity)
+# 
+# hist_vec <- ifelse(hist_vec == "IMM", 1, ifelse(hist_vec == "ND", 2, ifelse(hist_vec == "DEV", 3, ifelse(hist_vec == "VIT", 4, ifelse(hist_vec == "PSWN", 5, ifelse(hist_vec == "SWN", 6, ifelse(hist_vec == "PSNT", 7, ifelse(hist_vec == "SNT", 8, NA))))))))
+
+
+#Run a model
+## USE glmnet 
+#https://cran.r-project.org/web/packages/glmnet/vignettes/glmnet.pdf
+#http://www.sthda.com/english/articles/37-model-selection-essentials-in-r/153-penalized-regression-essentials-ridge-lasso-elastic-net/
+#https://glmnet.stanford.edu/articles/glmnet.html
+
+#Check out https://www.statlearning.com/
+
+#First, find good lambda value for shrinkage. Defined as the lambda that minimizes the cross-validated prediction error rate.
+# SEE: https://garthtarr.github.io/avfs/lab03_soln.html
+set.seed(13)
+cv <- cv.glmnet(x = peak_mat, y = hist_vec, family = "multinomial", alpha = 0) #bootstrap
+plot(cv)
+
+```
+
+Now we can find coefficients (or log odds) for optimized lambda (lambda.min). If we exponentiate them, we can find relative risk ratio (odds).
+```{r}
+coefs <- coef(cv, s = "lambda.min")#Can bootstrap SE for coefs (need to figure out how)
+coefs_mat <- rbind(coefs$ND[,1]-coefs$IMM[,1], coefs$DEV[,1]-coefs$IMM[,1], coefs$VIT[,1]-coefs$IMM[,1], coefs$PSWN[,1]-coefs$IMM[,1], coefs$SWN[,1]-coefs$IMM[,1], coefs$PSNT[,1]-coefs$IMM[,1], coefs$SNT[,1]-coefs$IMM[,1]) #extract all coefficients, will need to subtract "ref" coefficient (IMM) from all others.
+coefs_mat <- as.data.frame(cbind(coefs_mat, c("ND", "DEV", "VIT", "PSWN", "SWN", "PSNT", "SNT")))
+
+coefs_df <- pivot_longer(coefs_mat, cols = c(2:16), names_to = "peak_num", values_to = "log_odds")
+coefs_df <- coefs_df[,-1]
+coefs_df$log_odds <- as.numeric(coefs_df$log_odds)
+coefs_df$V17 <- as.factor(coefs_df$V17)
+coefs_df$peak_num <- as.factor(coefs_df$peak_num)
+
+RRR_df <- coefs_df%>%
+  mutate(RRR_m = exp(log_odds))%>%
+  rename(maturity = "V17")
+
+```
+How to interpret: example, one unit increase in peak.1m intensity is associated with a decrease in log odds of a sample being DEV vs. IMM in the amount of -0.0057. ETC. Also interesting to note a lot of significance in the peak 3, 4, and 6 which we can observe visually by the separation in spectra!
+
+
+The probability of choosing one outcome category over the probability of the other and is often referred to as relative risk (odds). The relative risk ratios for a unit change in the predictor variable is the right-hand side linear equation exponentiated and therefore equal to exponentiated regression coefficients.
+```{r, include = FALSE}
+
+#Try a plot
+oo_cols <- length(unique(peak_moddf$HistoMaturity))
+oo_colors <- colorRampPalette(c("#370617","#d00000","#dc2f02","#F29E4C","#EFEA5A","#B9E769","#2b9348"))(oo_cols)
+
+plot_1 <- ggplot(subset(RRR_df, peak_num == "peak1.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_2 <- ggplot(subset(RRR_df, peak_num == "peak2.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_3 <- ggplot(subset(RRR_df, peak_num == "peak3.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_4 <- ggplot(subset(RRR_df, peak_num == "peak4.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_5 <- ggplot(subset(RRR_df, peak_num == "peak5.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_6 <- ggplot(subset(RRR_df, peak_num == "peak6.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_7 <- ggplot(subset(RRR_df, peak_num == "peak7.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_8 <- ggplot(subset(RRR_df, peak_num == "peak8.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_9 <- ggplot(subset(RRR_df, peak_num == "peak9.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_10 <- ggplot(subset(RRR_df, peak_num == "peak10.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_11 <- ggplot(subset(RRR_df, peak_num == "peak11.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_12 <- ggplot(subset(RRR_df, peak_num == "peak12.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+plot_13 <- ggplot(subset(RRR_df, peak_num == "peak13.m"))+
+  geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+  #xlim(.9, 1.1)+
+  scale_color_manual(values = oo_colors)+
+  guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+  labs(x=" ",
+       y= " ",
+       color = "Maturity Status")+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+  guides(color = FALSE, fill = FALSE)+
+  theme_classic()
+
+# plot_14 <- ggplot(subset(RRR_df, peak_num == "peak14.m"))+
+#   geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+#   #xlim(.9, 1.1)+
+#   scale_color_manual(values = oo_colors)+
+#   guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+#   labs(x=" ",
+#        y= " ",
+#        color = "Maturity Status")+
+#   geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+#   guides(color = FALSE, fill = FALSE)+
+#   theme_classic()
+# 
+# plot_15 <- ggplot(subset(RRR_df, peak_num == "peak15.m"))+
+#   geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+#   #xlim(.9, 1.1)+
+#   scale_color_manual(values = oo_colors)+
+#   guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+#   labs(x=" ",
+#        y= " ",
+#        color = "Maturity Status")+
+#   geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+#   guides(color = FALSE, fill = FALSE)+
+#   theme_classic()
+# 
+# plot_16 <- ggplot(subset(RRR_df, peak_num == "peak16.m"))+
+#   geom_point(aes(x = RRR_m, y = peak_num, color = maturity), position = position_dodge(width=1), key_glyph = "point")+
+#   #xlim(.9, 1.1)+
+#   scale_color_manual(values = oo_colors)+
+#   guides(color = guide_legend(reverse = TRUE, override.aes = list(size=2)))+
+#   labs(x=" ",
+#        y= " ",
+#        color = "Maturity Status")+
+#   geom_vline(xintercept = 1, linetype = "dashed", color = "grey50")+
+#   guides(color = FALSE, fill = FALSE)+
+#   theme_classic()
+```
+
+```{r, warnings = F, fig.width=4, fig.height=10, }
+ggarrange(plot_1, plot_2, plot_3, plot_4, plot_5, plot_6, plot_7, plot_8, plot_9, plot_10, plot_11, plot_12, plot_13, ncol = 2, nrow = 7)
+
+ggsave("RRR.pdf", width = 4, height = 10)
+```
+For each explantory variable (peak intensity) null and alternative hypotheses can be formuated as:
+H0: The relative risk ratio (odds) associated with explantory variable x is equal to 1.
+Ha: The realtive risk ratio (odds) associated wtih the explanatory variable x is not equal to 1. 
+
+
+To examine changes in predicted probability associated with variables, can create small datasets varying on variable while holding other constant. Do this for all peaks in turn while holding others at mean values. First prepare data.
+```{r, include = F}
+
+# Peak 1
+d_peak1 <- cbind(peak1.m = peak_moddf$peak1.m, peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak1 <- as.data.frame(predict(cv, newx = d_peak1, type = "response", s = "lambda.min", alpha = 0))
+pp.peak1 <- cbind(pp.peak1, peak_moddf$peak1.m)
+
+pp.peak1 <- pp.peak1%>%
+  transmute(peak = "1", `peak_moddf$peak1.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak1.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#ggplot(pp.peak1)+
+  #geom_line(aes(x = peak_diff, y = SWN))
+
+#Peak 2
+d_peak2 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = peak_moddf$peak2.m, peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m =  mean(peak_moddf$peak12.m), peak13.m =  mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak2 <- as.data.frame(predict(cv, newx = d_peak2, type = "response", s = "lambda.min", alpha = 0))
+pp.peak2 <- cbind(pp.peak2, peak_moddf$peak2.m)
+
+pp.peak2 <- pp.peak2%>%
+  transmute(peak = "2", `peak_moddf$peak2.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak2.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+# Peak 3
+d_peak3 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = peak_moddf$peak3.m, peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak3 <- as.data.frame(predict(cv, newx = d_peak3, type = "response", s = "lambda.min", alpha = 0))
+pp.peak3 <- cbind(pp.peak3, peak_moddf$peak3.m)
+
+pp.peak3 <- pp.peak3%>%
+  transmute(peak = "3", `peak_moddf$peak3.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak3.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 4
+d_peak4 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = peak_moddf$peak4.m,  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m),length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak4 <- as.data.frame(predict(cv, newx = d_peak4, type = "response", s = "lambda.min", alpha = 0))
+pp.peak4 <- cbind(pp.peak4, peak_moddf$peak4.m)
+
+pp.peak4 <- pp.peak4%>%
+  transmute(peak = "4", `peak_moddf$peak4.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak4.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 5
+d_peak5 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m =  peak_moddf$peak5.m, peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak5 <- as.data.frame(predict(cv, newx = d_peak5, type = "response", s = "lambda.min", alpha = 0))
+pp.peak5 <- cbind(pp.peak5, peak_moddf$peak5.m)
+
+pp.peak5 <- pp.peak5%>%
+  transmute(peak = "5", `peak_moddf$peak5.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak5.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 6
+d_peak6 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m =  mean(peak_moddf$peak5.m), peak6.m = peak_moddf$peak6.m, peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak6 <- as.data.frame(predict(cv, newx = d_peak6, type = "response", s = "lambda.min", alpha = 0))
+pp.peak6 <- cbind(pp.peak6, peak_moddf$peak6.m)
+
+pp.peak6 <- pp.peak6%>%
+  transmute(peak = "6", `peak_moddf$peak6.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak6.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 7
+d_peak7 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m =  mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = peak_moddf$peak7.m, peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak7 <- as.data.frame(predict(cv, newx = d_peak7, type = "response", s = "lambda.min", alpha = 0))
+pp.peak7 <- cbind(pp.peak7, peak_moddf$peak7.m)
+
+pp.peak7 <- pp.peak7%>%
+  transmute(peak = "7", `peak_moddf$peak7.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak7.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 8
+d_peak8 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m =  mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = peak_moddf$peak8.m, peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m =  mean(peak_moddf$peak11.m), peak12.m =  mean(peak_moddf$peak12.m), peak13.m =  mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak8 <- as.data.frame(predict(cv, newx = d_peak8, type = "response", s = "lambda.min", alpha = 0))
+pp.peak8 <- cbind(pp.peak8, peak_moddf$peak8.m)
+
+pp.peak8 <- pp.peak8%>%
+  transmute(peak = "8", `peak_moddf$peak8.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak8.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 9
+d_peak9 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = peak_moddf$peak9.m, peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak9 <- as.data.frame(predict(cv, newx = d_peak9, type = "response", s = "lambda.min", alpha = 0))
+pp.peak9 <- cbind(pp.peak9, peak_moddf$peak9.m)
+
+pp.peak9 <- pp.peak9%>%
+  transmute(peak = "9", `peak_moddf$peak9.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak9.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 10
+d_peak10 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = peak_moddf$peak10.m, peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak10 <- as.data.frame(predict(cv, newx = d_peak10, type = "response", s = "lambda.min", alpha = 0))
+pp.peak10 <- cbind(pp.peak10, peak_moddf$peak10.m)
+
+pp.peak10 <- pp.peak10%>%
+  transmute(peak = "10", `peak_moddf$peak10.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak10.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 11
+d_peak11 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = peak_moddf$peak11.m, peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak11 <- as.data.frame(predict(cv, newx = d_peak11, type = "response", s = "lambda.min", alpha = 0))
+pp.peak11 <- cbind(pp.peak11, peak_moddf$peak11.m)
+
+pp.peak11 <- pp.peak11%>%
+  transmute(peak = "11", `peak_moddf$peak11.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak11.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 12
+d_peak12 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = peak_moddf$peak12.m, peak13.m = mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak12 <- as.data.frame(predict(cv, newx = d_peak12, type = "response", s = "lambda.min", alpha = 0))
+pp.peak12 <- cbind(pp.peak12, peak_moddf$peak12.m)
+
+pp.peak12 <- pp.peak12%>%
+  transmute(peak = "12", `peak_moddf$peak12.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak12.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+#Peak 13
+d_peak13 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = peak_moddf$peak13.m, length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+
+pp.peak13 <- as.data.frame(predict(cv, newx = d_peak13, type = "response", s = "lambda.min", alpha = 0))
+pp.peak13 <- cbind(pp.peak13, peak_moddf$peak13.m)
+
+pp.peak13 <- pp.peak13%>%
+  transmute(peak = "13", `peak_moddf$peak13.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+  rename(peak_diff = `peak_moddf$peak13.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+# #Peak 14
+# d_peak14 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+# 
+# pp.peak14 <- as.data.frame(predict(cv, newx = d_peak14, type = "response", s = "lambda.min", alpha = 0))
+# pp.peak14 <- cbind(pp.peak14, peak_moddf$peak14.m)
+# 
+# pp.peak14 <- pp.peak14%>%
+#   transmute(peak = "14", `peak_moddf$peak14.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+#   rename(peak_diff = `peak_moddf$peak14.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+# 
+# #Peak 15
+# d_peak15 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = peak_moddf$peak15.m, peak16.m = mean(peak_moddf$peak16.m), length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+# 
+# pp.peak15 <- as.data.frame(predict(cv, newx = d_peak15, type = "response", s = "lambda.min"))
+# pp.peak15 <- cbind(pp.peak15, peak_moddf$peak15.m)
+# 
+# pp.peak15 <- pp.peak15%>%
+#   transmute(peak = "15", `peak_moddf$peak15.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+#   rename(peak_diff = `peak_moddf$peak15.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+# 
+# #Peak 16
+# d_peak16 <- cbind(peak1.m = mean(peak_moddf$peak1.m), peak2.m = mean(peak_moddf$peak2.m), peak3.m = mean(peak_moddf$peak3.m), peak4.m = mean(peak_moddf$peak4.m),  peak5.m = mean(peak_moddf$peak5.m), peak6.m = mean(peak_moddf$peak6.m), peak7.m = mean(peak_moddf$peak7.m), peak8.m = mean(peak_moddf$peak8.m), peak9.m = mean(peak_moddf$peak9.m), peak10.m = mean(peak_moddf$peak10.m), peak11.m = mean(peak_moddf$peak11.m), peak12.m = mean(peak_moddf$peak12.m), peak13.m = mean(peak_moddf$peak13.m), peak14.m = mean(peak_moddf$peak14.m), peak15.m = mean(peak_moddf$peak15.m), peak16.m = peak_moddf$peak16.m, length.m = mean(peak_moddf$length.m), GSI.m = mean(peak_moddf$GSI.m))
+# 
+# pp.peak16 <- as.data.frame(predict(cv, newx = d_peak16, type = "response", s = "lambda.min"))
+# pp.peak16 <- cbind(pp.peak16, peak_moddf$peak16.m)
+# 
+# pp.peak16 <- pp.peak16%>%
+#   transmute(peak = "16", `peak_moddf$peak16.m`, IMM.1, ND.1, DEV.1, VIT.1, PSWN.1, SWN.1, PSNT.1, SNT.1)%>%
+#   rename(peak_diff = `peak_moddf$peak16.m`, IMM = IMM.1, ND = ND.1, DEV = DEV.1, VIT = VIT.1, PSWN = PSWN.1, SWN = SWN.1, PSNT = PSNT.1, SNT = SNT.1) #peak diff from mean because centered
+
+
+# combine probabilities into one data set
+pp.all <- rbind(pp.peak1, pp.peak2, pp.peak3, pp.peak4, pp.peak5, pp.peak6, pp.peak7, pp.peak8, pp.peak9, pp.peak10, pp.peak11, pp.peak12, pp.peak13)
+
+#melt data to long for ggplot
+pp.all_l <- melt(pp.all, id.vars = c("peak", "peak_diff"), value.name = "probability")
+
+pp.all_l$peak <- as.numeric(pp.all_l$peak)
+
+```
+
+
+Now plot these probabilities. This plot shows how the probability of each maturity category changes as the peak intensity increases or decreases away from the average (since peak intensity data were mean centered). This is show individually for each peak. 
+```{r, warnings = F}
+# Try a plot!!!
+oo_colors <- colorRampPalette(c("#2b9348","#B9E769","#EFEA5A","#F29E4C","#dc2f02", "#d00000","#370617"))(oo_cols)
+
+ggplot(pp.all_l)+
+  geom_line(aes(x = peak_diff, y = probability, group = variable, color = variable))+
+  facet_wrap(~peak, scales = "free_x")+
+  scale_color_manual(values = oo_colors)+
+  theme_classic()
+
+ggsave("predicted_probs.pdf", width = 7, height = 5)
+```
+
+
+Can use predicted probabilities to help understand the model by converting them back to the scale of the response variable (maturity category). Calculate predicted probabilities for each outcome level using fitted function. We can start by generating the predicted probabilities for the observations in our dataset. Can eventually split data into training and test set.  
+```{r, include = F}
+pp <- predict(cv, newx = peak_mat, type = "class", s = "lambda.min", alpha = 0)
+
+pp_pred <- as.factor(pp)
+
+```
+
+```{r, warnings = F}
+# use caret and compute a confusion matrix
+mn_conf_mat <-confusionMatrix(data = pp_pred, reference = peak_moddf$HistoMaturity)
+
+mn_conf_mat
+```
+To look at this in terms of True Positives, True Negatives, False Positives, and False Negatives.
+```{r, warnings = F}
+#Calculate TP, TN, FP, FN
+multi_class_rates <- function(confusion_matrix) {
+    true_positives  <- diag(confusion_matrix)
+    false_positives <- colSums(confusion_matrix) - true_positives
+    false_negatives <- rowSums(confusion_matrix) - true_positives
+    true_negatives  <- sum(confusion_matrix) - true_positives -
+        false_positives - false_negatives
+    return(data.frame(true_positives, false_positives, true_negatives,
+                      false_negatives, row.names = names(true_positives)))
+}
+
+multi_class_rates(mn_conf_mat$table)
+```
+
+Another way to look at this graphically. I will make this prettier...
+```{r}
+#make dataframe
+mn_conf_df <- as.data.frame(mn_conf_mat$table)
+test <- mn_conf_df%>%
+  group_by(Reference)%>%
+  summarize(count = sum(Freq))
+
+mn_conf_df <- left_join(mn_conf_df, test, by = "Reference")
+
+mn_conf_df <- mn_conf_df%>%
+  mutate(proportion = Freq/count)
+
+
+ggplot(mn_conf_df)+
+  geom_point(aes(x = Reference, y = Prediction, size = proportion, alpha = proportion == 0.0))+
+  scale_alpha_manual(values = c(1,0))+
+  scale_size_area()+
+  guides(alpha = FALSE)+
+  theme_classic()
+
+ggsave("histosub_peaks_FL_GSI.pdf", width = 6, height = 5)
+
+```
+
+Can use CV model to predict on new dataset!
+```{r, include = F}
+#Make new dataset
+
+pp <- predict(cv, newx = peak_mat, type = "class", s = "lambda.min")
+
+pp_pred <- as.factor(pp)
+
+```
+
+```{r, warnings = F}
+# use caret and compute a confusion matrix
+mn_conf_mat <-confusionMatrix(data = pp_pred, reference = peak_moddf$HistoMaturity)
+
+mn_conf_mat
+```
+To look at this in terms of True Positives, True Negatives, False Positives, and False Negatives.
+```{r, warnings = F}
+#Calculate TP, TN, FP, FN
+multi_class_rates <- function(confusion_matrix) {
+    true_positives  <- diag(confusion_matrix)
+    false_positives <- colSums(confusion_matrix) - true_positives
+    false_negatives <- rowSums(confusion_matrix) - true_positives
+    true_negatives  <- sum(confusion_matrix) - true_positives -
+        false_positives - false_negatives
+    return(data.frame(true_positives, false_positives, true_negatives,
+                      false_negatives, row.names = names(true_positives)))
+}
+
+multi_class_rates(mn_conf_mat$table)
+```
+
+Another way to look at this graphically. I will make this prettier...
+```{r}
+#make dataframe
+mn_conf_df <- as.data.frame(mn_conf_mat$table)
+test <- mn_conf_df%>%
+  group_by(Reference)%>%
+  summarize(count = sum(Freq))
+
+mn_conf_df <- left_join(mn_conf_df, test, by = "Reference")
+
+mn_conf_df <- mn_conf_df%>%
+  mutate(proportion = Freq/count)
+
+
+ggplot(mn_conf_df)+
+  geom_point(aes(x = Reference, y = Prediction, size = proportion, alpha = proportion == 0.0))+
+  scale_alpha_manual(values = c(1,0))+
+  scale_size_area()+
+  guides(alpha = FALSE)+
+  theme_classic()
+
+ggsave("histosub_peaks_FL_GSI.pdf", width = 6, height = 5)
+
+```
